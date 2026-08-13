@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: ""
+
+jobs:
+  # Apple Silicon: every domain runs on Accelerate + rand (task #3). The
+  # runner is Apple Silicon so aarch64-apple-darwin is the native host target.
+  aarch64-darwin:
+    name: aarch64-apple-darwin (Accelerate)
+    runs-on: macos-14-xlarge # public Apple Silicon runner (arm64)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain (native aarch64-apple-darwin)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: target
+
+      - name: cargo check
+        run: cargo check --target aarch64-apple-darwin --workspace
+
+      - name: cargo test
+        run: cargo test --target aarch64-apple-darwin --workspace
+
+      - name: cargo clippy
+        run: cargo clippy --target aarch64-apple-darwin --workspace --all-targets -- -D warnings
+
+  # x86_64 Linux: Intel oneMKL acquired by nuvai-mkl-src at build time
+  # (conda-forge download into ~/.cache/nuvai-mkl). libclang is required by the
+  # nuvai-mkl-sys bindgen pass.
+  x86_64-linux:
+    name: x86_64-unknown-linux-gnu (Intel MKL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libclang (bindgen)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: target
+
+      - name: cargo check
+        run: cargo check --workspace
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets

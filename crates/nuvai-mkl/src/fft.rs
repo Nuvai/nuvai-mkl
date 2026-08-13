@@ -2,13 +2,14 @@
 //!
 //! On Intel targets this uses the DFTI interface ([`FftPlan`] wraps a committed
 //! 1D complex-to-complex DFT descriptor). On Apple Silicon
-//! (`aarch64-apple-darwin`) Intel ships no oneMKL; the vDSP DFT backend is
-//! wired in a later phase and this module currently reports
-//! [`ErrorKind::Unsupported`](crate::error::ErrorKind) rather than degrading
-//! silently (ADR-0003, decision 2).
+//! (`aarch64-apple-darwin`) it wraps a pair of vDSP DFT setups (one per
+//! direction), since vDSP makes the direction a creation parameter rather than
+//! a per-call argument.
 //!
 //! The forward transform is unnormalized; the backward transform applies the
-//! default `1/n` scaling, so `backward(forward(x)) == x`.
+//! default `1/n` scaling, so `backward(forward(x)) == x`. On aarch64 the vDSP
+//! inverse DFT is itself unnormalized, so the shim applies the `1/n` scale
+//! explicitly to preserve that contract.
 
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 use std::ptr;
@@ -18,11 +19,19 @@ use crate::error::{Error, Result};
 pub use nuvai_mkl_sys::{MKL_Complex16, MKL_Complex8};
 
 /// Opaque plan handle. On Intel this is the committed DFTI descriptor; on
-/// aarch64 it is unused (the vDSP backend is not wired yet).
+/// aarch64 it holds the forward + inverse vDSP DFT setups and the precision.
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 type FftHandle = nuvai_mkl_sys::DFTI_DESCRIPTOR_HANDLE;
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-type FftHandle = *mut std::os::raw::c_void;
+struct FftHandle {
+    /// Forward DFT setup (`vDSP_DFT_zop_CreateSetup`, direction = FORWARD).
+    forward: nuvai_mkl_sys::vDSP_DFT_Setup,
+    /// Inverse DFT setup (`vDSP_DFT_zop_CreateSetup`, direction = INVERSE).
+    inverse: nuvai_mkl_sys::vDSP_DFT_Setup,
+    /// True for the single-precision (f32) variants; selects the `D` vDSP API.
+    single: bool,
+}
 
 /// A committed 1D complex-to-complex DFT plan.
 pub struct FftPlan {
@@ -45,13 +54,58 @@ impl FftPlan {
         if len == 0 {
             return Err(Error::invalid("FFT length must be positive"));
         }
-        let _ = single;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let _ = len;
-            return Err(Error::unsupported(
-                "FFT on aarch64 requires the vDSP DFT backend (not yet wired)",
-            ));
+            let length = len as nuvai_mkl_sys::vDSP_Length;
+            let (forward, inverse) = unsafe {
+                let forward = if single {
+                    nuvai_mkl_sys::vDSP_DFT_zop_CreateSetup(
+                        std::ptr::null_mut(),
+                        length,
+                        nuvai_mkl_sys::vDSP_DFT_FORWARD,
+                    )
+                } else {
+                    nuvai_mkl_sys::vDSP_DFT_zop_CreateSetupD(
+                        std::ptr::null_mut(),
+                        length,
+                        nuvai_mkl_sys::vDSP_DFT_FORWARD,
+                    )
+                };
+                let inverse = if single {
+                    nuvai_mkl_sys::vDSP_DFT_zop_CreateSetup(
+                        std::ptr::null_mut(),
+                        length,
+                        nuvai_mkl_sys::vDSP_DFT_INVERSE,
+                    )
+                } else {
+                    nuvai_mkl_sys::vDSP_DFT_zop_CreateSetupD(
+                        std::ptr::null_mut(),
+                        length,
+                        nuvai_mkl_sys::vDSP_DFT_INVERSE,
+                    )
+                };
+                (forward, inverse)
+            };
+            if forward.is_null() || inverse.is_null() {
+                // Best-effort release of whatever half was allocated.
+                unsafe {
+                    if !forward.is_null() {
+                        nuvai_mkl_sys::vDSP_DFT_DestroySetup(forward);
+                    }
+                    if !inverse.is_null() {
+                        nuvai_mkl_sys::vDSP_DFT_DestroySetup(inverse);
+                    }
+                }
+                return Err(Error::mkl(1, "vDSP_DFT_zop_CreateSetup"));
+            }
+            Ok(Self {
+                handle: FftHandle {
+                    forward,
+                    inverse,
+                    single,
+                },
+                len,
+            })
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -131,9 +185,8 @@ impl FftPlan {
         self.check(input.len(), output.len())?;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            Err(Error::unsupported(
-                "FFT on aarch64 requires the vDSP DFT backend (not yet wired)",
-            ))
+            self.transform_c32(input, output, false);
+            Ok(())
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -156,9 +209,8 @@ impl FftPlan {
         self.check(input.len(), output.len())?;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            Err(Error::unsupported(
-                "FFT on aarch64 requires the vDSP DFT backend (not yet wired)",
-            ))
+            self.transform_c32(input, output, true);
+            Ok(())
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -181,9 +233,8 @@ impl FftPlan {
         self.check(input.len(), output.len())?;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            Err(Error::unsupported(
-                "FFT on aarch64 requires the vDSP DFT backend (not yet wired)",
-            ))
+            self.transform_c64(input, output, false);
+            Ok(())
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -206,9 +257,8 @@ impl FftPlan {
         self.check(input.len(), output.len())?;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            Err(Error::unsupported(
-                "FFT on aarch64 requires the vDSP DFT backend (not yet wired)",
-            ))
+            self.transform_c64(input, output, true);
+            Ok(())
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -227,11 +277,79 @@ impl FftPlan {
     }
 }
 
+/// Accelerate (`aarch64-apple-darwin`) FFT backend.
+///
+/// vDSP operates on *split* complex (separate real/imag arrays), so each call
+/// deinterleaves the caller's `MKL_Complex*` buffer into split scratch arrays,
+/// runs [`nuvai_mkl_sys::vDSP_DFT_Execute`] in place, and re-interleaves the
+/// result. vDSP's inverse DFT is unnormalized, so the `1/n` backward scale is
+/// applied explicitly to match the DFTI contract on Intel.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl FftPlan {
+    fn transform_c32(&self, input: &[MKL_Complex8], output: &mut [MKL_Complex8], inverse: bool) {
+        let n = self.len;
+        let mut re = vec![0.0f32; n];
+        let mut im = vec![0.0f32; n];
+        for (i, x) in input.iter().enumerate() {
+            re[i] = x.real;
+            im[i] = x.imag;
+        }
+        let setup = if inverse { self.handle.inverse } else { self.handle.forward };
+        unsafe {
+            nuvai_mkl_sys::vDSP_DFT_Execute(
+                setup,
+                re.as_ptr(),
+                im.as_ptr(),
+                re.as_mut_ptr(),
+                im.as_mut_ptr(),
+            );
+        }
+        let scale = if inverse { 1.0 / n as f32 } else { 1.0f32 };
+        for (i, y) in output.iter_mut().enumerate() {
+            y.real = re[i] * scale;
+            y.imag = im[i] * scale;
+        }
+    }
+
+    fn transform_c64(&self, input: &[MKL_Complex16], output: &mut [MKL_Complex16], inverse: bool) {
+        let n = self.len;
+        let mut re = vec![0.0f64; n];
+        let mut im = vec![0.0f64; n];
+        for (i, x) in input.iter().enumerate() {
+            re[i] = x.real;
+            im[i] = x.imag;
+        }
+        let setup = if inverse { self.handle.inverse } else { self.handle.forward };
+        unsafe {
+            nuvai_mkl_sys::vDSP_DFT_ExecuteD(
+                setup,
+                re.as_ptr(),
+                im.as_ptr(),
+                re.as_mut_ptr(),
+                im.as_mut_ptr(),
+            );
+        }
+        let scale = if inverse { 1.0 / n as f64 } else { 1.0f64 };
+        for (i, y) in output.iter_mut().enumerate() {
+            y.real = re[i] * scale;
+            y.imag = im[i] * scale;
+        }
+    }
+}
+
 impl Drop for FftPlan {
     fn drop(&mut self) {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            // No descriptor on aarch64 (the vDSP backend is not wired yet).
+            unsafe {
+                if self.handle.single {
+                    nuvai_mkl_sys::vDSP_DFT_DestroySetup(self.handle.forward);
+                    nuvai_mkl_sys::vDSP_DFT_DestroySetup(self.handle.inverse);
+                } else {
+                    nuvai_mkl_sys::vDSP_DFT_DestroySetupD(self.handle.forward);
+                    nuvai_mkl_sys::vDSP_DFT_DestroySetupD(self.handle.inverse);
+                }
+            }
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {

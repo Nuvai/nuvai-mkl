@@ -1,7 +1,7 @@
 //! End-to-end smoke tests exercising all six oneMKL domains against the real
 //! MKL 2026.1.0 acquired by `nuvai-mkl-src`.
 
-use nuvai_mkl::fft::MKL_Complex8;
+use nuvai_mkl::fft::{MKL_Complex16, MKL_Complex8};
 use nuvai_mkl::layout::{Layout, Transpose};
 use nuvai_mkl::{blas, dss, fft, lapack, pardiso, vml, vsl};
 
@@ -119,6 +119,31 @@ fn fft_roundtrip_c32() {
     assert!((out[0].real - 1.0).abs() <= 1e-5, "out[0] = {}", out[0].real);
     for o in &out[1..] {
         assert!(o.real.abs() <= 1e-5 && o.imag.abs() <= 1e-5);
+    }
+}
+
+#[test]
+fn fft_roundtrip_c64() {
+    let plan = fft::FftPlan::new_c64(4).unwrap();
+    // Same impulse test as the c32 variant, in double precision.
+    let input = [
+        MKL_Complex16 { real: 1.0, imag: 0.0 },
+        MKL_Complex16 { real: 0.0, imag: 0.0 },
+        MKL_Complex16 { real: 0.0, imag: 0.0 },
+        MKL_Complex16 { real: 0.0, imag: 0.0 },
+    ];
+    let mut freq = [MKL_Complex16 { real: 0.0, imag: 0.0 }; 4];
+    plan.forward_c64(&input, &mut freq).unwrap();
+    for f in &freq {
+        assert!((f.real - 1.0).abs() <= 1e-9, "real = {}", f.real);
+        assert!(f.imag.abs() <= 1e-9, "imag = {}", f.imag);
+    }
+
+    let mut out = [MKL_Complex16 { real: 0.0, imag: 0.0 }; 4];
+    plan.backward_c64(&freq, &mut out).unwrap();
+    assert!((out[0].real - 1.0).abs() <= 1e-9, "out[0] = {}", out[0].real);
+    for o in &out[1..] {
+        assert!(o.real.abs() <= 1e-9 && o.imag.abs() <= 1e-9);
     }
 }
 

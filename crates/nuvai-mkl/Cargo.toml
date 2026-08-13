@@ -1,0 +1,19 @@
+[package]
+name = "nuvai-mkl"
+description = "Safe, idiomatic Rust wrapper over Intel oneMKL 2026.1.0 (BLAS, LAPACK, FFT, VML, VSL, sparse, PARDISO, DSS)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+build = "build.rs"
+
+[dependencies]
+nuvai-mkl-sys = { workspace = true }
+nuvai-mkl-src = { workspace = true }
+
+[build-dependencies]
+nuvai-mkl-src = { workspace = true }

@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nuvai-mkl-src",
+    "crates/nuvai-mkl-sys",
+    "crates/nuvai-mkl",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Nuvai/nuvai-mkl"
+homepage = "https://github.com/Nuvai/nuvai-mkl"
+keywords = ["mkl", "blas", "lapack", "fft", "onemkl"]
+categories = ["science", "external-ffi-bindings", "mathematics"]
+
+[workspace.dependencies]
+nuvai-mkl-src = { path = "crates/nuvai-mkl-src", version = "0.1.0" }
+nuvai-mkl-sys = { path = "crates/nuvai-mkl-sys", version = "0.1.0" }
+nuvai-mkl = { path = "crates/nuvai-mkl", version = "0.1.0" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

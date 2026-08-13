@@ -1,0 +1,19 @@
+[package]
+name = "nuvai-mkl-sys"
+description = "Raw FFI bindings to the Intel oneMKL 2026.1.0 C interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+build = "build.rs"
+
+[dependencies]
+nuvai-mkl-src = { workspace = true }
+
+[build-dependencies]
+nuvai-mkl-src = { workspace = true }
+bindgen = "0.71"

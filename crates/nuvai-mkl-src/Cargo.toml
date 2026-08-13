@@ -1,0 +1,25 @@
+[package]
+name = "nuvai-mkl-src"
+description = "Acquire and link Intel oneMKL 2026.1.0 — system-detect (MKLROOT/oneAPI) or download from conda-forge/NuGet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+build = "build.rs"
+links = "mkl"
+
+[dependencies]
+ureq = "2.12"
+zip = "0.6"
+zstd = "0.13"
+tar = "0.4"
+
+[build-dependencies]
+ureq = "2.12"
+zip = "0.6"
+zstd = "0.13"
+tar = "0.4"

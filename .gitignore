@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Downloaded MKL scratch (acquired into ~/.cache, but guard against local stray copies)
+.mkl/
+**/*.conda
+**/*.nupkg
+
+# Nuvai local tooling
+.nuvai/
+
+# Editors / OS
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
+.nuvai/active-context.yaml
+.nuvai/active-prompts/
+.nuvai/debug/
+.nuvai/bug-rc/
+.nuvai/agent-progress/
+.nuvai/issues.jsonl
+.nuvai/discussions.jsonl
+.nuvai/local/
+.nuvai/reviews/
+.nuvai/reports
+.nuvai/audits

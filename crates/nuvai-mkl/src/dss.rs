@@ -2,10 +2,11 @@
 //!
 //! On Intel targets this wraps the MKL DSS solver for symmetric systems
 //! (matrices in CSR form with 0-based indexing, upper/lower triangle only).
-//! On Apple Silicon (`aarch64-apple-darwin`) the Accelerate Sparse/SparseSolve
-//! backend is wired in a later phase; this module currently reports
-//! [`ErrorKind::Unsupported`](crate::error::ErrorKind) rather than degrading
-//! silently (ADR-0003, decision 2).
+//! On Apple Silicon (`aarch64-apple-darwin`) the same CSR input is transposed
+//! to CSC and solved with the Accelerate Sparse/SparseSolve backend
+//! (`_SparseFactorSymmetric_Double` + `_SparseSolveOpaque_Double`,
+//! ADR-0003 decision 7). The backend is never silently selected: it is chosen
+//! by `cfg(target_arch)` exactly as on the other domains.
 //!
 //! Each `dss_*` routine interprets its own `opt` argument; the flags are *not*
 //! interchangeable between routines. In particular the matrix-structure flag
@@ -15,15 +16,27 @@
 //! flags to [`dss_solve_real_`]. Only the indexing/precision flags
 //! (`MKL_DSS_ZERO_BASED_INDEXING`) are passed to [`dss_create_`].
 
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 use std::os::raw::c_void;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use std::os::raw::c_long;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 use std::ptr;
 
 use crate::error::{Error, Result};
 
+/// Opaque factorized handle. On Intel this is the MKL DSS handle pointer; on
+/// aarch64 it is the Accelerate `SparseOpaqueFactorization_Double` (104 bytes)
+/// owned by value, since `_SparseFactorSymmetric_Double` returns it by value
+/// and `solve`/`Drop` consume it.
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+type DssHandle = *mut c_void;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+type DssHandle = nuvai_mkl_sys::SparseOpaqueFactorization_Double;
+
 /// A factorized DSS handle (double precision, real symmetric).
 pub struct Dss {
-    handle: *mut c_void,
+    handle: DssHandle,
 }
 
 impl Dss {
@@ -33,10 +46,42 @@ impl Dss {
     pub fn factor_symmetric(row_index: &[i32], columns: &[i32], values: &[f64]) -> Result<Self> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let _ = (row_index, columns, values);
-            return Err(Error::unsupported(
-                "DSS on aarch64 requires the Accelerate Sparse backend (not yet wired)",
-            ));
+            let n_rows = (row_index.len() as i32) - 1;
+            if n_rows <= 0 || values.len() != columns.len() {
+                return Err(Error::invalid("DSS: bad row_index/columns/values lengths"));
+            }
+
+            let (col_starts, row_indices, csc_values) = csr_upper_to_csc(n_rows, row_index, columns, values)?;
+
+            let matrix = nuvai_mkl_sys::SparseMatrix_Double {
+                structure: nuvai_mkl_sys::SparseMatrixStructure {
+                    rowCount: n_rows,
+                    columnCount: n_rows,
+                    columnStarts: col_starts.as_ptr() as *mut c_long,
+                    rowIndices: row_indices.as_ptr() as *mut i32,
+                    attributes: nuvai_mkl_sys::SparseAttributes_t::symmetric(),
+                    blockSize: 1,
+                },
+                data: csc_values.as_ptr() as *mut f64,
+            };
+
+            let sfoptions = crate::pardiso::default_symbolic_options();
+            let nfoptions = crate::pardiso::default_numeric_options();
+
+            let mut factor = unsafe {
+                nuvai_mkl_sys::_SparseFactorSymmetric_Double(
+                    nuvai_mkl_sys::SparseFactorizationCholesky,
+                    &matrix,
+                    &sfoptions,
+                    &nfoptions,
+                )
+            };
+            if factor.status != nuvai_mkl_sys::SparseStatusOK {
+                let status = factor.status;
+                unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
+                return Err(Error::mkl(status, "_SparseFactorSymmetric_Double"));
+            }
+            Ok(Self { handle: factor })
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -100,10 +145,11 @@ impl Dss {
     pub fn solve(&self, rhs: &[f64]) -> Result<Vec<f64>> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let _ = rhs;
-            return Err(Error::unsupported(
-                "DSS on aarch64 requires the Accelerate Sparse backend (not yet wired)",
-            ));
+            let n = self.handle.symbolicFactorization.rowCount;
+            if rhs.len() != n as usize {
+                return Err(Error::invalid("DSS: rhs length mismatch"));
+            }
+            crate::pardiso::solve_with_factor(&self.handle, n, rhs)
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -128,8 +174,58 @@ impl Dss {
     }
 }
 
+/// Build a 0-based CSC (compressed sparse column) representation of the square
+/// `n × n` matrix given in 0-based upper-triangle CSR form (`row_index` length
+/// `n + 1`, `columns`/`values` length `nnz`). Returns
+/// `(column_starts, row_indices, values)`.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn csr_upper_to_csc(
+    n: i32,
+    row_index: &[i32],
+    columns: &[i32],
+    values: &[f64],
+) -> Result<(Vec<i64>, Vec<i32>, Vec<f64>)> {
+    let n = n as usize;
+    let nnz = columns.len();
+    let mut col_count = vec![0usize; n];
+    for &col in columns {
+        if col < 0 || col as usize >= n {
+            return Err(Error::invalid("DSS: column index out of range"));
+        }
+        col_count[col as usize] += 1;
+    }
+    let mut col_starts = vec![0i64; n + 1];
+    for j in 0..n {
+        col_starts[j + 1] = col_starts[j] + col_count[j] as i64;
+    }
+    let mut next = col_starts[..n].to_vec();
+    let mut row_indices = vec![0i32; nnz];
+    let mut out_values = vec![0.0f64; nnz];
+    for i in 0..n {
+        let lo = row_index[i] as usize;
+        let hi = row_index[i + 1] as usize;
+        if lo > hi || hi > nnz {
+            return Err(Error::invalid("DSS: malformed row_index"));
+        }
+        for k in lo..hi {
+            let col = columns[k] as usize;
+            let pos = next[col] as usize;
+            row_indices[pos] = i as i32;
+            out_values[pos] = values[k];
+            next[col] += 1;
+        }
+    }
+    Ok((col_starts, row_indices, out_values))
+}
+
 impl Drop for Dss {
     fn drop(&mut self) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            unsafe {
+                nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut self.handle);
+            }
+        }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
             // `dss_delete` takes the plain `opt = 0` (it does not accept the

@@ -1,5 +1,10 @@
 //! VML — Vector Math Library: element-wise transcendental and algebraic
-//! functions computed in parallel over a whole vector.
+//! functions computed over a whole vector.
+//!
+//! On Intel targets these call the oneMKL VML functions. On Apple Silicon
+//! (`aarch64-apple-darwin`) the vForce backend is wired in a later phase; this
+//! module currently reports [`ErrorKind::Unsupported`](crate::error::ErrorKind)
+//! rather than degrading silently (ADR-0003, decision 2).
 
 use std::os::raw::c_int;
 
@@ -19,8 +24,18 @@ macro_rules! vml_unary {
         $(#[$doc])*
         pub fn $name(src: &[$ty], dst: &mut [$ty]) -> Result<()> {
             let n = check(src.len(), dst.len(), stringify!($name))?;
-            unsafe { nuvai_mkl_sys::$ffi(n, src.as_ptr(), dst.as_mut_ptr()) };
-            Ok(())
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let _ = n;
+                Err(Error::unsupported(
+                    "VML on aarch64 requires the vForce backend (not yet wired)",
+                ))
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                unsafe { nuvai_mkl_sys::$ffi(n, src.as_ptr(), dst.as_mut_ptr()) };
+                Ok(())
+            }
         }
     };
 }

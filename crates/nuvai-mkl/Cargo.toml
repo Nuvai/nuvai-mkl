@@ -11,6 +11,16 @@ keywords.workspace = true
 categories.workspace = true
 build = "build.rs"
 
+[features]
+default = ["accelerate"]
+# Link backend on Apple Silicon. "accelerate" is the default; "openblas"
+# opts into OpenBLAS instead. On Intel targets these features are inert
+# (the backend is always oneMKL), but selecting one still enables aarch64
+# builds to compile. At most one should be enabled; if both are, the
+# selection is made explicitly via `nuvai_mkl_src::backend()`.
+accelerate = ["nuvai-mkl-src/accelerate"]
+openblas = ["nuvai-mkl-src/openblas"]
+
 [dependencies]
 nuvai-mkl-sys = { workspace = true }
 nuvai-mkl-src = { workspace = true }

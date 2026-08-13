@@ -76,6 +76,27 @@ fn lapack_dgesv_2x2() {
 }
 
 #[test]
+fn lapack_sgesv_rowmajor_2x2() {
+    // Non-symmetric A (row-major) so the row-major transpose shim is actually
+    // exercised: A = [[2,0],[1,3]], b = [4,10] -> x = [2, 8/3]. ldb = nrhs = 1
+    // is the packed row-major right-hand side (LAPACKE row-major contract).
+    let mut a = [2.0f32, 0.0, 1.0, 3.0];
+    let mut b = [4.0f32, 10.0];
+    let mut ipiv = [0i32; 2];
+    lapack::sgesv(Layout::RowMajor, 2, 1, &mut a, 2, &mut ipiv, &mut b, 1).unwrap();
+    assert_close(&b, &[2.0, 8.0 / 3.0], 1e-5);
+}
+
+#[test]
+fn lapack_dgesv_rowmajor_2x2() {
+    let mut a = [2.0f64, 0.0, 1.0, 3.0];
+    let mut b = [4.0f64, 10.0];
+    let mut ipiv = [0i32; 2];
+    lapack::dgesv(Layout::RowMajor, 2, 1, &mut a, 2, &mut ipiv, &mut b, 1).unwrap();
+    assert_close64(&b, &[2.0, 8.0 / 3.0], 1e-12);
+}
+
+#[test]
 fn fft_roundtrip_c32() {
     let plan = fft::FftPlan::new_c32(4).unwrap();
     // Impulse δ = [1,0,0,0] -> forward = [1,1,1,1].

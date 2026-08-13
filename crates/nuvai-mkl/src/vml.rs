@@ -1,10 +1,11 @@
 //! VML — Vector Math Library: element-wise transcendental and algebraic
 //! functions computed over a whole vector.
 //!
-//! On Intel targets these call the oneMKL VML functions. On Apple Silicon
-//! (`aarch64-apple-darwin`) the vForce backend is wired in a later phase; this
-//! module currently reports [`ErrorKind::Unsupported`](crate::error::ErrorKind)
-//! rather than degrading silently (ADR-0003, decision 2).
+//! On Intel targets these call the oneMKL VML functions (`(n, src, dst)`
+//! argument order). On Apple Silicon (`aarch64-apple-darwin`) they call the
+//! Accelerate vForce functions, which use the reversed `(dst, src, n)` order
+//! and different symbol names; the [`vml_unary!`] macro carries both symbols
+//! and each cfg branch emits the matching call.
 
 use std::os::raw::c_int;
 
@@ -19,21 +20,24 @@ fn check(src: usize, dst: usize, name: &str) -> Result<c_int> {
     Ok(src as c_int)
 }
 
+/// Generate one unary VML function.
+///
+/// `$mkl` is the oneMKL VML symbol (used on Intel, `(n, src, dst)` order) and
+/// `$vforce` is the Accelerate vForce symbol (used on aarch64, `(dst, src, n)`
+/// order).
 macro_rules! vml_unary {
-    ($(#[$doc:meta])* $name:ident, $ffi:ident, $ty:ty) => {
+    ($(#[$doc:meta])* $name:ident, $mkl:ident, $vforce:ident, $ty:ty) => {
         $(#[$doc])*
         pub fn $name(src: &[$ty], dst: &mut [$ty]) -> Result<()> {
             let n = check(src.len(), dst.len(), stringify!($name))?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                let _ = n;
-                Err(Error::unsupported(
-                    "VML on aarch64 requires the vForce backend (not yet wired)",
-                ))
+                unsafe { nuvai_mkl_sys::$vforce(dst.as_mut_ptr(), src.as_ptr(), &n) };
+                Ok(())
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
             {
-                unsafe { nuvai_mkl_sys::$ffi(n, src.as_ptr(), dst.as_mut_ptr()) };
+                unsafe { nuvai_mkl_sys::$mkl(n, src.as_ptr(), dst.as_mut_ptr()) };
                 Ok(())
             }
         }
@@ -42,89 +46,89 @@ macro_rules! vml_unary {
 
 vml_unary! {
     /// `r[i] = exp(a[i])` (single precision).
-    exp, vsExp, f32
+    exp, vsExp, vvexpf, f32
 }
 vml_unary! {
     /// `r[i] = exp(a[i])` (double precision).
-    dexp, vdExp, f64
+    dexp, vdExp, vvexp, f64
 }
 vml_unary! {
     /// `r[i] = ln(a[i])` (single precision).
-    ln, vsLn, f32
+    ln, vsLn, vvlogf, f32
 }
 vml_unary! {
     /// `r[i] = ln(a[i])` (double precision).
-    dln, vdLn, f64
+    dln, vdLn, vvlog, f64
 }
 vml_unary! {
     /// `r[i] = sqrt(a[i])` (single precision).
-    sqrt, vsSqrt, f32
+    sqrt, vsSqrt, vvsqrtf, f32
 }
 vml_unary! {
     /// `r[i] = sqrt(a[i])` (double precision).
-    dsqrt, vdSqrt, f64
+    dsqrt, vdSqrt, vvsqrt, f64
 }
 vml_unary! {
     /// `r[i] = sin(a[i])` (single precision).
-    sin, vsSin, f32
+    sin, vsSin, vvsinf, f32
 }
 vml_unary! {
     /// `r[i] = sin(a[i])` (double precision).
-    dsin, vdSin, f64
+    dsin, vdSin, vvsin, f64
 }
 vml_unary! {
     /// `r[i] = cos(a[i])` (single precision).
-    cos, vsCos, f32
+    cos, vsCos, vvcosf, f32
 }
 vml_unary! {
     /// `r[i] = cos(a[i])` (double precision).
-    dcos, vdCos, f64
+    dcos, vdCos, vvcos, f64
 }
 vml_unary! {
     /// `r[i] = tan(a[i])` (single precision).
-    tan, vsTan, f32
+    tan, vsTan, vvtanf, f32
 }
 vml_unary! {
     /// `r[i] = tan(a[i])` (double precision).
-    dtan, vdTan, f64
+    dtan, vdTan, vvtan, f64
 }
 vml_unary! {
     /// `r[i] = log10(a[i])` (single precision).
-    log10, vsLog10, f32
+    log10, vsLog10, vvlog10f, f32
 }
 vml_unary! {
     /// `r[i] = log10(a[i])` (double precision).
-    dlog10, vdLog10, f64
+    dlog10, vdLog10, vvlog10, f64
 }
 vml_unary! {
     /// `r[i] = cbrt(a[i])` (single precision).
-    cbrt, vsCbrt, f32
+    cbrt, vsCbrt, vvcbrtf, f32
 }
 vml_unary! {
     /// `r[i] = cbrt(a[i])` (double precision).
-    dcbrt, vdCbrt, f64
+    dcbrt, vdCbrt, vvcbrt, f64
 }
 vml_unary! {
     /// `r[i] = asin(a[i])` (single precision).
-    asin, vsAsin, f32
+    asin, vsAsin, vvasinf, f32
 }
 vml_unary! {
     /// `r[i] = asin(a[i])` (double precision).
-    dasin, vdAsin, f64
+    dasin, vdAsin, vvasin, f64
 }
 vml_unary! {
     /// `r[i] = acos(a[i])` (single precision).
-    acos, vsAcos, f32
+    acos, vsAcos, vvacosf, f32
 }
 vml_unary! {
     /// `r[i] = acos(a[i])` (double precision).
-    dacos, vdAcos, f64
+    dacos, vdAcos, vvacos, f64
 }
 vml_unary! {
     /// `r[i] = atan(a[i])` (single precision).
-    atan, vsAtan, f32
+    atan, vsAtan, vvatanf, f32
 }
 vml_unary! {
     /// `r[i] = atan(a[i])` (double precision).
-    datan, vdAtan, f64
+    datan, vdAtan, vvatan, f64
 }

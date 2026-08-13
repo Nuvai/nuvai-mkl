@@ -147,17 +147,92 @@ fn fft_roundtrip_c64() {
     }
 }
 
+/// Exercise every VML function (all 11) in single precision against known
+/// values. The f32/f64 variants run through both backends (MKL VML on Intel,
+/// Accelerate vForce on aarch64).
 #[test]
-fn vml_exp_sqrt() {
-    let src = [0.0f32, 1.0, 2.0];
-    let mut dst = [0.0f32; 3];
-    vml::exp(&src, &mut dst).unwrap();
-    assert_close(&dst, &[1.0, std::f32::consts::E, std::f32::consts::E * std::f32::consts::E], 1e-4);
+fn vml_full_surface_f32() {
+    let e = std::f32::consts::E;
+    let (pi2, pi4) = (std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_4);
 
-    let src = [0.0f32, 1.0, 4.0, 9.0];
+    let mut dst = [0.0f32; 3];
+    vml::exp(&[0.0, 1.0, 2.0], &mut dst).unwrap();
+    assert_close(&dst, &[1.0, e, e * e], 1e-4);
+
+    vml::ln(&[1.0, e, e * e], &mut dst).unwrap();
+    assert_close(&dst, &[0.0, 1.0, 2.0], 1e-4);
+
+    vml::log10(&[1.0, 10.0, 100.0], &mut dst).unwrap();
+    assert_close(&dst, &[0.0, 1.0, 2.0], 1e-4);
+
     let mut dst = [0.0f32; 4];
-    vml::sqrt(&src, &mut dst).unwrap();
+    vml::sqrt(&[0.0, 1.0, 4.0, 9.0], &mut dst).unwrap();
     assert_close(&dst, &[0.0, 1.0, 2.0, 3.0], 1e-5);
+
+    vml::cbrt(&[0.0, 1.0, 8.0, 27.0], &mut dst).unwrap();
+    assert_close(&dst, &[0.0, 1.0, 2.0, 3.0], 1e-5);
+
+    let mut dst = [0.0f32; 2];
+    vml::sin(&[0.0, pi2], &mut dst).unwrap();
+    assert_close(&dst, &[0.0, 1.0], 1e-5);
+
+    vml::cos(&[0.0, pi2], &mut dst).unwrap();
+    assert_close(&dst, &[1.0, 0.0], 1e-5);
+
+    vml::tan(&[0.0, pi4], &mut dst).unwrap();
+    assert_close(&dst, &[0.0, 1.0], 1e-5);
+
+    vml::asin(&[0.0, 1.0], &mut dst).unwrap();
+    assert_close(&dst, &[0.0, pi2], 1e-5);
+
+    vml::acos(&[1.0, 0.0], &mut dst).unwrap();
+    assert_close(&dst, &[0.0, pi2], 1e-5);
+
+    vml::atan(&[0.0, 1.0], &mut dst).unwrap();
+    assert_close(&dst, &[0.0, pi4], 1e-5);
+}
+
+/// Every VML function in double precision (vForce `D` variants on aarch64).
+#[test]
+fn vml_full_surface_f64() {
+    let e = std::f64::consts::E;
+    let (pi2, pi4) = (std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_4);
+
+    let mut dst = [0.0f64; 3];
+    vml::dexp(&[0.0, 1.0, 2.0], &mut dst).unwrap();
+    assert_close64(&dst, &[1.0, e, e * e], 1e-12);
+
+    vml::dln(&[1.0, e, e * e], &mut dst).unwrap();
+    assert_close64(&dst, &[0.0, 1.0, 2.0], 1e-12);
+
+    vml::dlog10(&[1.0, 10.0, 100.0], &mut dst).unwrap();
+    assert_close64(&dst, &[0.0, 1.0, 2.0], 1e-12);
+
+    let mut dst = [0.0f64; 4];
+    vml::dsqrt(&[0.0, 1.0, 4.0, 9.0], &mut dst).unwrap();
+    assert_close64(&dst, &[0.0, 1.0, 2.0, 3.0], 1e-12);
+
+    vml::dcbrt(&[0.0, 1.0, 8.0, 27.0], &mut dst).unwrap();
+    assert_close64(&dst, &[0.0, 1.0, 2.0, 3.0], 1e-12);
+
+    let mut dst = [0.0f64; 2];
+    vml::dsin(&[0.0, pi2], &mut dst).unwrap();
+    assert_close64(&dst, &[0.0, 1.0], 1e-12);
+
+    vml::dcos(&[0.0, pi2], &mut dst).unwrap();
+    assert_close64(&dst, &[1.0, 0.0], 1e-12);
+
+    vml::dtan(&[0.0, pi4], &mut dst).unwrap();
+    assert_close64(&dst, &[0.0, 1.0], 1e-12);
+
+    vml::dasin(&[0.0, 1.0], &mut dst).unwrap();
+    assert_close64(&dst, &[0.0, pi2], 1e-12);
+
+    vml::dacos(&[1.0, 0.0], &mut dst).unwrap();
+    assert_close64(&dst, &[0.0, pi2], 1e-12);
+
+    vml::datan(&[0.0, 1.0], &mut dst).unwrap();
+    assert_close64(&dst, &[0.0, pi4], 1e-12);
 }
 
 #[test]

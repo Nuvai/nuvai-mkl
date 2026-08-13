@@ -19,7 +19,6 @@ fn main() {
     {
         let backend = nuvai_mkl_src::backend();
         println!("cargo:metadata=BACKEND={}", nuvai_mkl_src::backend_tag(backend));
-        return;
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]

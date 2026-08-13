@@ -285,10 +285,10 @@ pub(crate) fn solve_with_factor(
     // nrhs * solveWorkspaceRequiredPerRHS bytes.
     let ws_size = factor.solveWorkspaceRequiredStatic + factor.solveWorkspaceRequiredPerRHS;
     let mut workspace = vec![0u8; ws_size];
-    let mut factor_copy = *factor;
+    let factor_copy = *factor;
     unsafe {
         nuvai_mkl_sys::_SparseSolveOpaque_Double(
-            &mut factor_copy,
+            &factor_copy,
             &rhs,
             &soln,
             workspace.as_mut_ptr() as *mut c_void,
@@ -331,36 +331,41 @@ pub(crate) fn default_numeric_options() -> nuvai_mkl_sys::SparseNumericFactorOpt
 
 impl Drop for Pardiso {
     fn drop(&mut self) {
-        if !self.analyzed {
-            return;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            // The Accelerate backend keeps no persistent handle state: the
+            // QR factorization is created and destroyed inside `solve_accelerate`,
+            // so there is nothing to release here.
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
-            unsafe {
-                let phase = -1i32; // release all internal memory
-                let maxfct = 1i32;
-                let mnum = 1i32;
-                let nrhs = 1i32;
-                let msglvl = 0i32;
-                let mut error = 0i32;
-                nuvai_mkl_sys::pardiso(
-                    self.pt.as_mut_ptr() as *mut c_void,
-                    &maxfct,
-                    &mnum,
-                    &self.mtype,
-                    &phase,
-                    &self.n,
-                    ptr::null::<c_void>(),
-                    ptr::null::<i32>(),
-                    ptr::null::<i32>(),
-                    ptr::null_mut::<i32>(),
-                    &nrhs,
-                    self.iparm.as_mut_ptr(),
-                    &msglvl,
-                    ptr::null_mut::<c_void>(),
-                    ptr::null_mut::<c_void>(),
-                    &mut error,
-                );
+            if self.analyzed {
+                unsafe {
+                    let phase = -1i32; // release all internal memory
+                    let maxfct = 1i32;
+                    let mnum = 1i32;
+                    let nrhs = 1i32;
+                    let msglvl = 0i32;
+                    let mut error = 0i32;
+                    nuvai_mkl_sys::pardiso(
+                        self.pt.as_mut_ptr() as *mut c_void,
+                        &maxfct,
+                        &mnum,
+                        &self.mtype,
+                        &phase,
+                        &self.n,
+                        ptr::null::<c_void>(),
+                        ptr::null::<i32>(),
+                        ptr::null::<i32>(),
+                        ptr::null_mut::<i32>(),
+                        &nrhs,
+                        self.iparm.as_mut_ptr(),
+                        &msglvl,
+                        ptr::null_mut::<c_void>(),
+                        ptr::null_mut::<c_void>(),
+                        &mut error,
+                    );
+                }
             }
         }
     }

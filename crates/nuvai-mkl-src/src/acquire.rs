@@ -5,18 +5,28 @@
 // headers for bindgen). It locates oneMKL 2026.1.0 on the system, or
 // downloads + extracts it from conda-forge into a shared cache.
 
+#[cfg(not(target_arch = "aarch64"))]
 use std::env;
+#[cfg(not(target_arch = "aarch64"))]
 use std::fs;
+#[cfg(not(target_arch = "aarch64"))]
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(not(target_arch = "aarch64"))]
+use std::path::Path;
 
 /// The oneMKL version this crate acquires and links.
 pub const MKL_VERSION: &str = "2026.1.0";
 
+#[cfg(not(target_arch = "aarch64"))]
 const CONDA_BASE: &str = "https://conda.anaconda.org/conda-forge";
+#[cfg(not(target_arch = "aarch64"))]
 const LINUX_MKL: &str = "mkl-2026.1.0-hecca717_243.conda";
+#[cfg(not(target_arch = "aarch64"))]
 const LINUX_INCLUDE: &str = "mkl-include-2026.1.0-ha770c72_243.conda";
+#[cfg(not(target_arch = "aarch64"))]
 const WIN_MKL: &str = "mkl-2026.1.0-hac47afa_233.conda";
+#[cfg(not(target_arch = "aarch64"))]
 const WIN_INCLUDE: &str = "mkl-include-2026.1.0-h57928b3_233.conda";
 
 /// Resolved location of an MKL install.
@@ -29,14 +39,30 @@ pub struct MklInfo {
 }
 
 /// Locate MKL: a system oneAPI install first, then download from conda-forge.
+///
+/// Intel ships no oneMKL for Apple Silicon, so on `aarch64-apple-darwin` this
+/// panics with a clear pointer to the fallback path — the build script never
+/// calls it there (it dispatches on [`backend`] instead), so this guard only
+/// fires if a downstream build script calls `locate()` directly on aarch64.
 pub fn locate() -> MklInfo {
-    if let Some(info) = system_mkl() {
-        return info;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        panic!(
+            "Intel oneMKL is unavailable on Apple Silicon; select the Accelerate/OpenBLAS \
+             fallback via nuvai_mkl_src::backend() instead of nuvai_mkl_src::locate()"
+        );
     }
-    download_mkl()
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        if let Some(info) = system_mkl() {
+            return info;
+        }
+        download_mkl()
+    }
 }
 
 /// Detect a system oneAPI install via `MKLROOT` or a well-known path.
+#[cfg(not(target_arch = "aarch64"))]
 fn system_mkl() -> Option<MklInfo> {
     let root = env::var("MKLROOT")
         .ok()
@@ -61,6 +87,7 @@ fn system_mkl() -> Option<MklInfo> {
 }
 
 /// Download + extract MKL into the shared cache, returning its paths.
+#[cfg(not(target_arch = "aarch64"))]
 fn download_mkl() -> MklInfo {
     let pkg_dir = cache_dir().join(format!("mkl-{MKL_VERSION}"));
 
@@ -87,6 +114,7 @@ fn download_mkl() -> MklInfo {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn fetch_and_extract_conda(file: &str, pkg_dir: &Path) -> PathBuf {
     let url = format!("{CONDA_BASE}/{}/{}", conda_subdir(), file);
     let dest = pkg_dir.join(file);
@@ -101,6 +129,7 @@ fn fetch_and_extract_conda(file: &str, pkg_dir: &Path) -> PathBuf {
     out
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn conda_subdir() -> &'static str {
     if cfg!(target_os = "windows") {
         "win-64"
@@ -109,6 +138,7 @@ fn conda_subdir() -> &'static str {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn cache_dir() -> PathBuf {
     let base = env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -119,6 +149,7 @@ fn cache_dir() -> PathBuf {
     dir
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn download(url: &str, dest: &Path) {
     eprintln!("[nuvai-mkl-src] downloading {url}");
     let resp = ureq::get(url)
@@ -135,6 +166,7 @@ fn download(url: &str, dest: &Path) {
 }
 
 /// A `.conda` file is a ZIP containing `info-*.tar.zst` and `pkg-*.tar.zst`.
+#[cfg(not(target_arch = "aarch64"))]
 fn extract_conda(conda_path: &Path, dest: &Path) {
     let file = fs::File::open(conda_path).expect("open .conda");
     let mut zip = zip::ZipArchive::new(file).expect("open .conda as zip");

@@ -12,6 +12,15 @@ categories.workspace = true
 build = "build.rs"
 links = "mkl"
 
+[features]
+# Backend selection on aarch64-apple-darwin, where Intel ships no oneMKL.
+# `accelerate` is the default; `openblas` is the opt-in alternative. On every
+# other target these flags are no-ops (Intel MKL is used and the fallback code
+# is cfg(target_arch = "aarch64")-gated). Selection is explicit, never silent.
+default = ["accelerate"]
+accelerate = []
+openblas = []
+
 [dependencies]
 ureq = "2.12"
 zip = "0.6"

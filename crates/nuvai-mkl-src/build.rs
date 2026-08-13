@@ -1,19 +1,41 @@
-//! Build script for `nuvai-mkl-src`: locate oneMKL 2026.1.0 and emit the
-//! linker directives needed by any crate (and final binary) that depends on
-//! this one.
+//! Build script for `nuvai-mkl-src`: locate oneMKL 2026.1.0 (Intel x86_64) or
+//! emit the Apple Silicon fallback linker directives (Accelerate / OpenBLAS).
+//!
+//! On `aarch64-apple-darwin`, Intel ships no oneMKL, so this script never calls
+//! [`locate`]; it emits `-framework Accelerate` (default) or `-lopenblas`
+//! (`openblas` feature). The Intel x86_64 path is byte-identical to the
+//! pre-fallback behaviour and is selected by [`backend`].
 
 include!("src/acquire.rs");
+include!("src/backend.rs");
 
 fn main() {
     println!("cargo:rerun-if-env-changed=MKLROOT");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/acquire.rs");
+    println!("cargo:rerun-if-changed=src/backend.rs");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENBLAS");
 
     // docs.rs has no network and no MKL; skip linking there.
-    if env::var("DOCS_RS").is_ok() {
+    if std::env::var("DOCS_RS").is_ok() {
         return;
     }
 
+    match backend() {
+        Backend::IntelMkl => emit_intel_mkl(),
+        Backend::Accelerate => {
+            println!("cargo:rustc-link-lib=framework=Accelerate");
+            println!("cargo:metadata=BACKEND=accelerate");
+        }
+        Backend::OpenBlas => {
+            println!("cargo:rustc-link-lib=dylib=openblas");
+            println!("cargo:metadata=BACKEND=openblas");
+        }
+    }
+}
+
+/// Emit the Intel oneMKL linker directives (x86_64 Linux/Windows/macOS).
+fn emit_intel_mkl() {
     let info = locate();
 
     println!("cargo:rustc-link-search=native={}", info.lib_dir.display());

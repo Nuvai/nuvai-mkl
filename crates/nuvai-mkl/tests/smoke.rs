@@ -249,6 +249,17 @@ fn vsl_uniform_gaussian() {
     stream.gaussian(0.0, 1.0, &mut g).unwrap();
     let gmean = g.iter().sum::<f32>() / g.len() as f32;
     assert!((gmean - 0.0).abs() <= 0.01, "gaussian mean = {gmean}");
+
+    let mut u64 = vec![0.0f64; 100_000];
+    stream.uniform64(0.0, 1.0, &mut u64).unwrap();
+    let mean64 = u64.iter().sum::<f64>() / u64.len() as f64;
+    assert!(u64.iter().all(|&v| (0.0..1.0).contains(&v)));
+    assert!((mean64 - 0.5).abs() <= 0.01, "uniform64 mean = {mean64}");
+
+    let mut g64 = vec![0.0f64; 100_000];
+    stream.gaussian64(0.0, 1.0, &mut g64).unwrap();
+    let gmean64 = g64.iter().sum::<f64>() / g64.len() as f64;
+    assert!((gmean64 - 0.0).abs() <= 0.01, "gaussian64 mean = {gmean64}");
 }
 
 #[test]

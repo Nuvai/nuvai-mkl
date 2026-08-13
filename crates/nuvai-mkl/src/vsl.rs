@@ -1,26 +1,38 @@
 //! VSL — Vector Statistical Library: random-number generation.
 //!
-//! On Intel targets [`Stream`] wraps a VSL random stream. On Apple Silicon
-//! (`aarch64-apple-darwin`) the `rand`/`rand_chacha` backend is wired in a
-//! later phase; this module currently reports
-//! [`ErrorKind::Unsupported`](crate::error::ErrorKind) rather than degrading
-//! silently (ADR-0003, decision 2). Streams hold raw state and are therefore
-//! neither `Send` nor `Sync`; share one behind a lock when cross-thread
+//! On Intel targets [`Stream`] wraps a VSL random stream (MT19937 by default).
+//! On Apple Silicon (`aarch64-apple-darwin`) it wraps a ChaCha20 stream from
+//! `rand_chacha`, seeded via `rand`'s `SeedableRng` (ADR-0003 decision 6: the
+//! sequence is statistically valid but not identical to Intel VSL). Both
+//! backends expose the same [`Stream`] API and mutate on `&self` (VSL streams
+//! are internally mutable; the aarch64 backend uses [`std::cell::RefCell`]).
+//! Streams are not `Sync`; share one behind a lock when cross-thread
 //! randomness is required.
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use std::cell::RefCell;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 use std::os::raw::c_int;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 use std::ptr;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use rand::RngExt;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use rand::SeedableRng;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use rand_chacha::ChaCha20Rng;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use rand_distr::{Distribution, Normal};
+
 use crate::error::{Error, Result};
 
 /// Opaque stream state. On Intel this is the VSL stream pointer; on aarch64 it
-/// is unused (the `rand` backend is not wired yet).
+/// is a ChaCha20 RNG behind `RefCell` for interior mutability on `&self`.
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 type StreamState = nuvai_mkl_sys::VSLStreamStatePtr;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-type StreamState = *mut std::os::raw::c_void;
+type StreamState = RefCell<ChaCha20Rng>;
 
 /// A random-number stream.
 pub struct Stream {
@@ -28,14 +40,18 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Create a new MT19937 stream seeded with `seed`.
+    /// Create a new stream seeded with `seed`.
+    ///
+    /// On Intel this is VSL's MT19937 BRNG; on aarch64 it is a ChaCha20 RNG
+    /// seeded deterministically from `seed` (both reproduce their sequence for
+    /// the same seed, but the two platforms do not produce identical streams).
     pub fn new(seed: u32) -> Result<Self> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let _ = seed;
-            return Err(Error::unsupported(
-                "VSL on aarch64 requires the rand/rand_chacha backend (not yet wired)",
-            ));
+            let rng = ChaCha20Rng::seed_from_u64(seed as u64);
+            Ok(Self {
+                state: RefCell::new(rng),
+            })
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -58,10 +74,11 @@ impl Stream {
     pub fn uniform(&self, a: f32, b: f32, out: &mut [f32]) -> Result<()> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let _ = (a, b, out);
-            return Err(Error::unsupported(
-                "VSL on aarch64 requires the rand/rand_chacha backend (not yet wired)",
-            ));
+            let mut rng = self.state.borrow_mut();
+            for v in out.iter_mut() {
+                *v = rng.random_range(a..b);
+            }
+            Ok(())
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -87,10 +104,11 @@ impl Stream {
     pub fn uniform64(&self, a: f64, b: f64, out: &mut [f64]) -> Result<()> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let _ = (a, b, out);
-            return Err(Error::unsupported(
-                "VSL on aarch64 requires the rand/rand_chacha backend (not yet wired)",
-            ));
+            let mut rng = self.state.borrow_mut();
+            for v in out.iter_mut() {
+                *v = rng.random_range(a..b);
+            }
+            Ok(())
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -116,10 +134,13 @@ impl Stream {
     pub fn gaussian(&self, mean: f32, sigma: f32, out: &mut [f32]) -> Result<()> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let _ = (mean, sigma, out);
-            return Err(Error::unsupported(
-                "VSL on aarch64 requires the rand/rand_chacha backend (not yet wired)",
-            ));
+            let distr = Normal::new(mean, sigma)
+                .map_err(|e| Error::invalid(format!("gaussian: {e}")))?;
+            let mut rng = self.state.borrow_mut();
+            for v in out.iter_mut() {
+                *v = distr.sample(&mut *rng);
+            }
+            Ok(())
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -145,10 +166,13 @@ impl Stream {
     pub fn gaussian64(&self, mean: f64, sigma: f64, out: &mut [f64]) -> Result<()> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let _ = (mean, sigma, out);
-            return Err(Error::unsupported(
-                "VSL on aarch64 requires the rand/rand_chacha backend (not yet wired)",
-            ));
+            let distr = Normal::new(mean, sigma)
+                .map_err(|e| Error::invalid(format!("gaussian: {e}")))?;
+            let mut rng = self.state.borrow_mut();
+            for v in out.iter_mut() {
+                *v = distr.sample(&mut *rng);
+            }
+            Ok(())
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -175,7 +199,7 @@ impl Drop for Stream {
     fn drop(&mut self) {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            // No VSL stream on aarch64 (the rand backend is not wired yet).
+            // `ChaCha20Rng` is owned and needs no teardown.
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {

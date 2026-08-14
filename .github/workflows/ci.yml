@@ -18,8 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install stable toolchain (native aarch64-apple-darwin)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install nightly 1.99 toolchain (native aarch64-apple-darwin)
+        uses: dtolnay/rust-toolchain@nightly-2026-08-11
         with:
           targets: aarch64-apple-darwin
           components: clippy, rustfmt
@@ -52,8 +52,8 @@ jobs:
       - name: Install OpenBLAS
         run: brew install openblas
 
-      - name: Install stable toolchain (native aarch64-apple-darwin)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install nightly 1.99 toolchain (native aarch64-apple-darwin)
+        uses: dtolnay/rust-toolchain@nightly-2026-08-11
         with:
           targets: aarch64-apple-darwin
           components: clippy, rustfmt
@@ -80,8 +80,8 @@ jobs:
       - name: Install libclang (bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
-      - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install nightly 1.99 toolchain
+        uses: dtolnay/rust-toolchain@nightly-2026-08-11
         with:
           components: clippy, rustfmt
 
@@ -119,8 +119,8 @@ jobs:
           "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
-      - name: Install stable toolchain (native x86_64-pc-windows-msvc)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install nightly 1.99 toolchain (native x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@nightly-2026-08-11
         with:
           components: clippy, rustfmt
 

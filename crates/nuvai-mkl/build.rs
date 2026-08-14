@@ -24,6 +24,9 @@ fn main() {
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
         let info = nuvai_mkl_src::locate();
+        // Only used for the rpath directives (Linux/macOS); Windows has no rpath
+        // and instead surfaces the runtime DLL directory via `dll_dir()`.
+        #[cfg(not(target_os = "windows"))]
         let lib_dir = info.lib_dir.display();
 
         #[cfg(target_os = "linux")]

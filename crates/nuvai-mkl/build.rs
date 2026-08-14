@@ -37,5 +37,19 @@ fn main() {
         {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
         }
+        #[cfg(target_os = "windows")]
+        {
+            // Windows has no rpath: the loader resolves `mkl_rt.3.dll` at process
+            // start from PATH (or the exe's directory). Surface the runtime DLL
+            // directory so CI can prepend it to PATH and local dev knows where to
+            // add it (or deploy the DLLs beside the executable).
+            if let Some(dll_dir) = info.dll_dir() {
+                println!(
+                    "cargo:warning=MKL runtime DLLs in {} — add to PATH (or copy beside the exe) before cargo run/test",
+                    dll_dir.display()
+                );
+                println!("cargo:metadata=DLL_DIR={}", dll_dir.display());
+            }
+        }
     }
 }

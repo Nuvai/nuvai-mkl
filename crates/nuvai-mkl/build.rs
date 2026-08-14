@@ -42,11 +42,12 @@ fn main() {
         }
         #[cfg(target_os = "windows")]
         {
-            // Windows has no rpath: the loader resolves `mkl_rt.3.dll` at process
+            // Windows has no rpath: the loader resolves `mkl_rt.3.dll` (and its
+            // runtime dependencies `libiomp5md.dll` / `tbb12.dll`) at process
             // start from PATH (or the exe's directory). Surface the runtime DLL
-            // directory so CI can prepend it to PATH and local dev knows where to
-            // add it (or deploy the DLLs beside the executable).
-            if let Some(dll_dir) = info.dll_dir() {
+            // directories so CI can prepend them to PATH and local dev knows
+            // where to add them (or deploy the DLLs beside the executable).
+            for dll_dir in info.dll_dirs() {
                 println!(
                     "cargo:warning=MKL runtime DLLs in {} — add to PATH (or copy beside the exe) before cargo run/test",
                     dll_dir.display()

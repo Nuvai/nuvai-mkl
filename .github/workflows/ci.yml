@@ -137,21 +137,21 @@ jobs:
       - name: cargo check
         run: cargo check --workspace
 
-      # Windows has no rpath: the loader resolves mkl_rt.3.dll from PATH at
-      # process start. Prepend the MKL DLL directory (deterministic cache
-      # layout: <cache>/mkl-2026.1.0/<mkl-pkg>/Library/bin) before running the
-      # tests so the 6 domain smoke tests can load it without a manual copy.
+      # Windows has no rpath: the loader resolves mkl_rt.3.dll (and its runtime
+      # deps libiomp5md.dll / tbb12.dll) from PATH at process start. Every
+      # extracted conda package puts its DLLs under <cache>/mkl-2026.1.0/<pkg>/Library/bin;
+      # prepend each before running the tests so the 6 domain smoke tests can
+      # load the runtime without a manual copy.
       - name: Add MKL DLL dir to PATH
         shell: pwsh
         run: |
-          $pkg = Get-ChildItem "$env:USERPROFILE\.cache\nuvai-mkl\mkl-2026.1.0" -Directory |
-            Where-Object { $_.Name -like 'mkl-2026.1.0-*' } |
-            Select-Object -First 1
-          if (-not $pkg) { throw "MKL package dir not found under ~/.cache/nuvai-mkl/mkl-2026.1.0" }
-          $dllDir = Join-Path $pkg.FullName "Library\bin"
-          if (-not (Test-Path $dllDir)) { throw "MKL DLL dir not found: $dllDir" }
-          Write-Host "MKL DLL dir: $dllDir"
-          "$dllDir" >> $env:GITHUB_PATH
+          $dllDirs = @()
+          foreach ($root in Get-ChildItem "$env:USERPROFILE\.cache\nuvai-mkl\mkl-2026.1.0" -Directory) {
+            $bin = Join-Path $root.FullName "Library\bin"
+            if (Test-Path $bin) { $dllDirs += $bin }
+          }
+          if ($dllDirs.Count -eq 0) { throw "No MKL runtime DLL dirs found under ~/.cache/nuvai-mkl/mkl-2026.1.0" }
+          foreach ($d in $dllDirs) { Write-Host "MKL DLL dir: $d"; "$d" >> $env:GITHUB_PATH }
 
       - name: cargo test
         run: cargo test --workspace

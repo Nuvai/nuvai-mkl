@@ -69,7 +69,7 @@ fn emit_intel_mkl() {
     // Informational metadata (also surfaced to downstream build scripts).
     println!("cargo:metadata=INCLUDE_DIR={}", info.include_dir.display());
     println!("cargo:metadata=LIB_DIR={}", info.lib_dir.display());
-    if let Some(dll_dir) = &info.dll_dir {
+    for dll_dir in &info.dll_dirs {
         println!("cargo:metadata=DLL_DIR={}", dll_dir.display());
     }
     println!("cargo:metadata=VERSION={}", MKL_VERSION);

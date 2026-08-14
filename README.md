@@ -16,7 +16,7 @@ A three-crate Cargo workspace, mirroring the proven `-src`/`-sys`/wrapper split:
 
 | Crate | Role |
 |---|---|
-| `nuvai-mkl-src` | Acquire + link. Build script detects `MKLROOT`/oneAPI, or downloads 2026.1.0 from conda-forge (Linux/Windows; Windows also pulls `mkl-devel` for the `mkl_rt.lib` import lib), then emits linker directives. `links = "mkl"`. On `aarch64-apple-darwin` it emits Accelerate (`-framework Accelerate`) or OpenBLAS (`-lopenblas`) directives instead — see [Backend selection](#backend-selection). |
+| `nuvai-mkl-src` | Acquire + link. Build script detects `MKLROOT`/oneAPI, or downloads 2026.1.0 from conda-forge (Linux/Windows; Windows also pulls `mkl-devel` for the `mkl_rt.lib` import lib and the `llvm-openmp`/`tbb` runtime DLLs), then emits linker directives. `links = "mkl"`. On `aarch64-apple-darwin` it emits Accelerate (`-framework Accelerate`) or OpenBLAS (`-lopenblas`) directives instead — see [Backend selection](#backend-selection). |
 | `nuvai-mkl-sys` | Raw FFI bindings to the full C interface, generated with `bindgen`. On `aarch64-apple-darwin` a hand-written `extern "C"` surface replaces the bindgen pass (Accelerate cblas, Fortran LAPACK `_`, vDSP DFT, vForce, Sparse/SparseSolve). |
 | `nuvai-mkl` | Safe, typed wrapper over all MKL domains. |
 
@@ -63,23 +63,25 @@ Selection is **explicit, never silent** (ADR-0003 decision 2):
 | Target | Backend | Status |
 |---|---|---|
 | `x86_64-unknown-linux-gnu` | Intel oneMKL — conda-forge `mkl` + `mkl-include`, or system oneAPI (`MKLROOT`) | ✅ |
-| `x86_64-pc-windows-msvc` | Intel oneMKL — conda-forge `mkl` + `mkl-include` + `mkl-devel` (links `mkl_rt` → `mkl_rt.3.dll`), or system oneAPI (`MKLROOT`) | ✅ |
+| `x86_64-pc-windows-msvc` | Intel oneMKL — conda-forge `mkl` + `mkl-include` + `mkl-devel` + `llvm-openmp` + `tbb` (links `mkl_rt` → `mkl_rt.3.dll`; runtime DLLs `libiomp5md.dll`/`tbb12.dll` on `PATH`), or system oneAPI (`MKLROOT`) | ✅ |
 | `x86_64-apple-darwin` | Intel oneMKL (system oneAPI) | ✅ |
 | `aarch64-apple-darwin` (Apple Silicon) | Accelerate + `rand` (`accelerate` feature, default) | ✅ |
 | `aarch64-unknown-linux-gnu` | `openblas` feature (planned) | 🚧 planned |
 
 On `x86_64-pc-windows-msvc` the Windows loader resolves the MKL runtime
-(`mkl_rt.3.dll`) from `PATH` at process start, not from the link-search path.
-When acquiring from conda-forge, the DLLs are extracted to
-`~/.cache/nuvai-mkl/mkl-2026.1.0/<mkl-pkg>/Library/bin`; add that directory to
-`PATH` (or copy the DLLs beside the executable) before `cargo run` / `cargo test`.
-The system oneAPI path on Windows is `MKLROOT`-only (the well-known
-`/opt/intel/oneapi/…` Unix paths do not exist there).
+(`mkl_rt.3.dll`, plus the OpenMP `libiomp5md.dll` and TBB `tbb12.dll` its
+threading layers depend on) from `PATH` at process start, not from the
+link-search path. When acquiring from conda-forge, the DLLs are extracted under
+`~/.cache/nuvai-mkl/mkl-2026.1.0/<pkg>/Library/bin` — one directory per package
+(`mkl`, `llvm-openmp`, `tbb`); add all of them to `PATH` (or copy the DLLs
+beside the executable) before `cargo run` / `cargo test`. The system oneAPI path
+on Windows is `MKLROOT`-only (the well-known `/opt/intel/oneapi/…` Unix paths do
+not exist there).
 
 ## Requirements
 
 - Rust (built against **1.99 nightly**, edition 2024).
-- First build downloads ~140 MB of MKL into `~/.cache/nuvai-mkl/` (cached thereafter; on Windows the cache falls back to `%USERPROFILE%\.cache\nuvai-mkl` since `HOME` is often unset).
+- First build downloads ~140 MB of MKL into `~/.cache/nuvai-mkl/` (cached thereafter; on Windows the cache falls back to `%USERPROFILE%\.cache\nuvai-mkl` since `HOME` is often unset, and the acquisition also fetches `mkl-devel`, `llvm-openmp` and `tbb`).
 - `libclang` + `bindgen` for regenerating FFI bindings (LLVM on Windows, `libclang-dev` on Linux).
 
 ## Usage

@@ -44,7 +44,6 @@ impl Error {
     }
 
     /// An operation not available on this backend.
-    #[allow(dead_code)] // used by the upcoming Apple Silicon / OpenBLAS fallback path
     pub(crate) fn unsupported(message: impl Into<String>) -> Self {
         Self {
             kind: ErrorKind::Unsupported,

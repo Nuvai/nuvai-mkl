@@ -147,6 +147,30 @@ fn fft_roundtrip_c64() {
     }
 }
 
+#[test]
+fn fft_roundtrip_c32_non_pow2() {
+    // 24 = 3·2^3 is not a power of two, so this exercises the non-power-of-two
+    // path (DFTI on Intel; vDSP's `f·2^n` for `n >= 3` on aarch64 — note 6 =
+    // 3·2^1 is *not* implemented by vDSP). As for any length, the DFT of the
+    // impulse is all-ones and its inverse recovers it.
+    let plan = fft::FftPlan::new_c32(24).unwrap();
+    let mut input = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 24];
+    input[0].real = 1.0;
+    let mut freq = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 24];
+    plan.forward_c32(&input, &mut freq).unwrap();
+    for f in &freq {
+        assert!((f.real - 1.0).abs() <= 1e-5, "real = {}", f.real);
+        assert!(f.imag.abs() <= 1e-5, "imag = {}", f.imag);
+    }
+
+    let mut out = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 24];
+    plan.backward_c32(&freq, &mut out).unwrap();
+    assert!((out[0].real - 1.0).abs() <= 1e-5, "out[0] = {}", out[0].real);
+    for o in &out[1..] {
+        assert!(o.real.abs() <= 1e-5 && o.imag.abs() <= 1e-5);
+    }
+}
+
 /// Exercise every VML function (all 11) in single precision against known
 /// values. The f32/f64 variants run through both backends (MKL VML on Intel,
 /// Accelerate vForce on aarch64).
@@ -283,4 +307,82 @@ fn dss_solve_2x2() {
     let dss = dss::Dss::factor_symmetric(&row_index, &columns, &values).unwrap();
     let x = dss.solve(&[5.0f64, 4.0]).unwrap();
     assert_close64(&x, &[1.0, 1.0], 1e-9);
+}
+
+#[test]
+fn vsl_uniform_rejects_empty_range() {
+    let stream = vsl::Stream::new(7).unwrap();
+    // Empty (a == b), inverted (a > b), and NaN ranges must error, not panic:
+    // Intel VSL reports BADARGS, but the aarch64 `rand` backend would panic on
+    // an empty range, so the guard normalizes both to an error.
+    let mut out = [0.0f32; 8];
+    assert!(stream.uniform(1.0, 1.0, &mut out).is_err());
+    assert!(stream.uniform(2.0, 1.0, &mut out).is_err());
+    assert!(stream.uniform(f32::NAN, 1.0, &mut out).is_err());
+    assert!(stream.uniform(0.0, f32::NAN, &mut out).is_err());
+
+    let mut out64 = [0.0f64; 8];
+    assert!(stream.uniform64(1.0, 1.0, &mut out64).is_err());
+    assert!(stream.uniform64(2.0, 1.0, &mut out64).is_err());
+    assert!(stream.uniform64(f64::NAN, 1.0, &mut out64).is_err());
+    assert!(stream.uniform64(0.0, f64::NAN, &mut out64).is_err());
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn pardiso_rejects_symmetric_mtype_on_aarch64() {
+    // The Accelerate QR backend factors a full matrix; symmetric `mtype`s store
+    // only one triangle and must be rejected rather than silently mis-solved.
+    let ia = [1i32, 3, 5];
+    let ja = [1i32, 2, 1, 2];
+    let a = [2.0f64, 1.0, 1.0, 3.0];
+    let b = [4.0f64, 10.0];
+    let mut solver = pardiso::Pardiso::new(pardiso::mtype::SPD);
+    assert!(solver.solve(&ia, &ja, &a, &b).is_err());
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn pardiso_detects_singular_on_aarch64() {
+    // A = [[1,1],[1,1]] is singular; QR still "succeeds" and returns a
+    // least-squares solution, so the residual check must turn it into an error.
+    let ia = [1i32, 3, 5];
+    let ja = [1i32, 2, 1, 2];
+    let a = [1.0f64, 1.0, 1.0, 1.0];
+    let b = [1.0f64, 0.0];
+    let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+    assert!(solver.solve(&ia, &ja, &a, &b).is_err());
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn dss_rejects_lower_triangle_on_aarch64() {
+    // Same SPD matrix as `dss_solve_2x2` but stored as the *lower* triangle,
+    // which the Accelerate Cholesky backend does not accept.
+    let row_index = [0i32, 1, 3];
+    let columns = [0i32, 0, 1];
+    let values = [4.0f64, 1.0, 3.0];
+    assert!(dss::Dss::factor_symmetric(&row_index, &columns, &values).is_err());
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn fft_rejects_unsupported_length_on_aarch64() {
+    // 7 is prime and not a product of {2,3,5}, so vDSP cannot plan it. The
+    // wrapper must surface an error rather than fail on a null setup.
+    assert!(fft::FftPlan::new_c32(7).is_err());
+    assert!(fft::FftPlan::new_c64(7).is_err());
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn pardiso_rejects_bad_csr_indices_on_aarch64() {
+    // row_index[0] must equal the 1-based index base; anything else would
+    // silently mis-index entries, so it must be rejected up front.
+    let ia = [0i32, 2, 3];
+    let ja = [1i32, 2, 1];
+    let a = [2.0f64, 1.0, 3.0];
+    let b = [4.0f64, 10.0];
+    let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+    assert!(solver.solve(&ia, &ja, &a, &b).is_err());
 }

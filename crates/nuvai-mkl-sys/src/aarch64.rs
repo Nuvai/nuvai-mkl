@@ -61,8 +61,9 @@ pub const CblasConjTrans: u32 = 113;
 // LAPACK (Accelerate exposes only the Fortran `_` entry points; no LAPACKE)
 // ---------------------------------------------------------------------------
 //
-// On LP64 targets `__CLPK_integer` is `int` (4 bytes) and the routines return
-// `int`, writing the status through the trailing `*info` argument.
+// On LP64 targets `__CLPK_integer` is `int` (4 bytes). The `?gesv`/`?getrf`
+// Fortran routines are `SUBROUTINE`s, so they return `void`; the status is
+// written through the trailing `*info` argument.
 
 // ---------------------------------------------------------------------------
 // vDSP DFT
@@ -346,7 +347,7 @@ unsafe extern "C" {
     pub fn cblas_sscal(n: c_int, alpha: f32, x: *mut f32, incx: c_int);
     pub fn cblas_dscal(n: c_int, alpha: f64, x: *mut f64, incx: c_int);
 
-    // --- LAPACK Fortran `_` entry points (return `int`; `info` out-arg) ---
+    // --- LAPACK Fortran `_` entry points (void `SUBROUTINE`s; `info` out-arg) ---
     pub fn sgesv_(
         n: *const c_int,
         nrhs: *const c_int,
@@ -356,7 +357,7 @@ unsafe extern "C" {
         b: *mut f32,
         ldb: *const c_int,
         info: *mut c_int,
-    ) -> c_int;
+    );
     pub fn dgesv_(
         n: *const c_int,
         nrhs: *const c_int,
@@ -366,7 +367,7 @@ unsafe extern "C" {
         b: *mut f64,
         ldb: *const c_int,
         info: *mut c_int,
-    ) -> c_int;
+    );
     pub fn sgetrf_(
         m: *const c_int,
         n: *const c_int,
@@ -374,7 +375,7 @@ unsafe extern "C" {
         lda: *const c_int,
         ipiv: *mut c_int,
         info: *mut c_int,
-    ) -> c_int;
+    );
     pub fn dgetrf_(
         m: *const c_int,
         n: *const c_int,
@@ -382,7 +383,7 @@ unsafe extern "C" {
         lda: *const c_int,
         ipiv: *mut c_int,
         info: *mut c_int,
-    ) -> c_int;
+    );
 
     // --- vDSP DFT (complex-to-complex, split real/imag arrays) ---
     pub fn vDSP_DFT_zop_CreateSetup(
@@ -437,18 +438,6 @@ unsafe extern "C" {
     pub fn vvatan(y: *mut f64, x: *const f64, n: *const c_int);
 
     // --- Sparse direct solvers ---
-    pub fn _SparseConvertFromCoordinate_Double(
-        m: c_int,
-        n: c_int,
-        nBlock: c_long,
-        blockSize: u8,
-        attributes: SparseAttributes_t,
-        row: *const c_int,
-        col: *const c_int,
-        val: *const f64,
-        storage: *mut i8,
-        workspace: *mut c_int,
-    ) -> SparseMatrix_Double;
     pub fn _SparseFactorSymmetric_Double(
         factorType: SparseFactorization_t,
         matrix: *const SparseMatrix_Double,
@@ -487,6 +476,8 @@ mod tests {
     fn accelerate_cblas_links() {
         let x = [1.0f32, 2.0, 3.0];
         let y = [4.0f32, 5.0, 6.0];
+        // SAFETY: `x`/`y` have exactly 3 elements and `incx`/`incy` are 1, so
+        // `cblas_sdot(3, …)` reads exactly the three elements of each array.
         let dot = unsafe { cblas_sdot(3, x.as_ptr(), 1, y.as_ptr(), 1) };
         assert!((dot - 32.0).abs() < 1e-6, "cblas_sdot = {dot}");
     }

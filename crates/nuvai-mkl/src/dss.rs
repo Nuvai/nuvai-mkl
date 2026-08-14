@@ -5,8 +5,10 @@
 //! On Apple Silicon (`aarch64-apple-darwin`) the same CSR input is transposed
 //! to CSC and solved with the Accelerate Sparse/SparseSolve backend
 //! (`_SparseFactorSymmetric_Double` + `_SparseSolveOpaque_Double`,
-//! ADR-0003 decision 7). The backend is never silently selected: it is chosen
-//! by `cfg(target_arch)` exactly as on the other domains.
+//! ADR-0003 decision 7). Only the upper triangle is accepted on that backend;
+//! lower-triangle storage is rejected as unsupported. The backend is never
+//! silently selected: it is chosen by `cfg(target_arch)` exactly as on the
+//! other domains.
 //!
 //! Each `dss_*` routine interprets its own `opt` argument; the flags are *not*
 //! interchangeable between routines. In particular the matrix-structure flag
@@ -51,7 +53,8 @@ impl Dss {
                 return Err(Error::invalid("DSS: bad row_index/columns/values lengths"));
             }
 
-            let (col_starts, row_indices, csc_values) = csr_upper_to_csc(n_rows, row_index, columns, values)?;
+            let (col_starts, row_indices, csc_values) =
+                crate::pardiso::csr_to_csc(n_rows as usize, row_index, columns, values, 0, true)?;
 
             let matrix = nuvai_mkl_sys::SparseMatrix_Double {
                 structure: nuvai_mkl_sys::SparseMatrixStructure {
@@ -68,6 +71,10 @@ impl Dss {
             let sfoptions = crate::pardiso::default_symbolic_options();
             let nfoptions = crate::pardiso::default_numeric_options();
 
+            // SAFETY: `matrix` borrows the CSC arrays for the duration of the
+            // call (they outlive it); `SparseFactorizationCholesky` and the
+            // option structs are valid. The returned `SparseOpaqueFactorization_Double`
+            // is owned by value and freed once via `Drop`/the error path.
             let mut factor = unsafe {
                 nuvai_mkl_sys::_SparseFactorSymmetric_Double(
                     nuvai_mkl_sys::SparseFactorizationCholesky,
@@ -78,6 +85,8 @@ impl Dss {
             };
             if factor.status != nuvai_mkl_sys::SparseStatusOK {
                 let status = factor.status;
+                // SAFETY: `factor` is an owned, initialized factorization; this
+                // releases it exactly once on the error path.
                 unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
                 return Err(Error::mkl(status, "_SparseFactorSymmetric_Double"));
             }
@@ -99,6 +108,11 @@ impl Dss {
 
             let mut handle: *mut c_void = ptr::null_mut();
 
+            // SAFETY: `handle` is a valid DSS handle once `dss_create_` returns
+            // 0 (checked); `row_index`/`columns`/`values`/`perm` are valid
+            // slices/Vecs of the documented lengths, passed to the matching
+            // `&`/`&mut` handle argument each routine expects. Every error path
+            // calls `dss_delete_` exactly once before returning.
             unsafe {
                 let mut status = nuvai_mkl_sys::dss_create_(&mut handle, &opt_create);
                 if status != 0 {
@@ -157,6 +171,9 @@ impl Dss {
             let opt_solve = 0i32; // normal (non-transpose, non-conjugate) solve
             let mut sol = vec![0.0f64; rhs.len()];
             let mut handle = self.handle; // local copy: DSS takes the handle by address
+            // SAFETY: `handle` is a valid factorized DSS handle; `rhs` and `sol`
+            // are valid slices and `sol` is sized to `rhs.len()` (single RHS of
+            // `n` values), so the solve reads/writes within bounds.
             let status = unsafe {
                 nuvai_mkl_sys::dss_solve_real_(
                     &mut handle,
@@ -174,54 +191,12 @@ impl Dss {
     }
 }
 
-/// Build a 0-based CSC (compressed sparse column) representation of the square
-/// `n × n` matrix given in 0-based upper-triangle CSR form (`row_index` length
-/// `n + 1`, `columns`/`values` length `nnz`). Returns
-/// `(column_starts, row_indices, values)`.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn csr_upper_to_csc(
-    n: i32,
-    row_index: &[i32],
-    columns: &[i32],
-    values: &[f64],
-) -> Result<(Vec<i64>, Vec<i32>, Vec<f64>)> {
-    let n = n as usize;
-    let nnz = columns.len();
-    let mut col_count = vec![0usize; n];
-    for &col in columns {
-        if col < 0 || col as usize >= n {
-            return Err(Error::invalid("DSS: column index out of range"));
-        }
-        col_count[col as usize] += 1;
-    }
-    let mut col_starts = vec![0i64; n + 1];
-    for j in 0..n {
-        col_starts[j + 1] = col_starts[j] + col_count[j] as i64;
-    }
-    let mut next = col_starts[..n].to_vec();
-    let mut row_indices = vec![0i32; nnz];
-    let mut out_values = vec![0.0f64; nnz];
-    for i in 0..n {
-        let lo = row_index[i] as usize;
-        let hi = row_index[i + 1] as usize;
-        if lo > hi || hi > nnz {
-            return Err(Error::invalid("DSS: malformed row_index"));
-        }
-        for k in lo..hi {
-            let col = columns[k] as usize;
-            let pos = next[col] as usize;
-            row_indices[pos] = i as i32;
-            out_values[pos] = values[k];
-            next[col] += 1;
-        }
-    }
-    Ok((col_starts, row_indices, out_values))
-}
-
 impl Drop for Dss {
     fn drop(&mut self) {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
+            // SAFETY: `self.handle` is an owned factorization, released exactly
+            // once here.
             unsafe {
                 nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut self.handle);
             }
@@ -231,6 +206,8 @@ impl Drop for Dss {
             // `dss_delete` takes the plain `opt = 0` (it does not accept the
             // zero-based-indexing flag).
             let opt = 0i32;
+            // SAFETY: `self.handle` is a valid DSS handle created in
+            // `factor_symmetric`, released exactly once here.
             unsafe {
                 nuvai_mkl_sys::dss_delete_(&self.handle, &opt);
             }

@@ -28,7 +28,11 @@ fn main() {
             println!("cargo:metadata=BACKEND=accelerate");
         }
         Backend::OpenBlas => {
+            // OpenBLAS replaces only BLAS/LAPACK (vecLib); FFT (vDSP), VML
+            // (vForce) and the sparse solvers (Sparse/SparseSolve) still call
+            // Accelerate, so both must be linked on this path.
             println!("cargo:rustc-link-lib=dylib=openblas");
+            println!("cargo:rustc-link-lib=framework=Accelerate");
             println!("cargo:metadata=BACKEND=openblas");
         }
     }

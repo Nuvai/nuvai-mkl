@@ -38,7 +38,7 @@ same typed API (ADR-0003).
 | **BLAS** | `cblas_*` / `?gemm`, `?gemv`, `?dot`, `?axpy` | Accelerate **vecLib** (`cblas_*`, symbol-aliased) or OpenBLAS |
 | **LAPACK** | `LAPACKE_*` (`?gesv`, `?getrf`, `?syev`, …) | Accelerate Fortran `_` entry points (`?gesv_`, …) + RowMajor shim, or OpenBLAS |
 | **FFT (DFTI)** | `DftiCreateDescriptor*` / `DftiCompute*` | Accelerate **vDSP** DFT (forward/inverse setups, `1/n` applied on inverse) |
-| **VML** (vector math) | `vsExp`, `vsLn`, `vsSin`, `vsSqrt`, … | Accelerate **vForce** (`vvExpf`, `vvLogf`, …, `(dst, src, n)` order) |
+| **VML** (vector math) | `vsExp`, `vsLn`, `vsSin`, `vsSqrt`, … | Accelerate **vForce** (`vvexpf`, `vvlogf`, …, `(dst, src, n)` order) |
 | **Sparse direct solvers (PARDISO/DSS)** | `pardisoinit`/`pardiso`, `dss_*` | Accelerate **Sparse/SparseSolve** (CSR→CSC transpose; QR for PARDISO, Cholesky for DSS) |
 | **VSL** (RNG) | `vslNewStream` / `vsRngUniform` / `vsRngGaussian` | `rand` / `rand_chacha` / `rand_distr` (ChaCha20; statistically valid, not sequence-identical) |
 

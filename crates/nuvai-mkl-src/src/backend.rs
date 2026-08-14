@@ -12,6 +12,21 @@
 // `nuvai-mkl-src` keeps `links = "mkl"` on every platform and remains the sole
 // emitter of linker directives, so no second `links` provider is needed.
 
+// On `aarch64-apple-darwin` the fallback is mandatory but its *choice* is a
+// Cargo feature, so disabling defaults (`--no-default-features`) with no
+// explicit replacement must fail loudly rather than silently fall back to
+// Accelerate. Selection is explicit, never silent (ADR-0003).
+#[cfg(all(
+    target_os = "macos",
+    target_arch = "aarch64",
+    not(feature = "accelerate"),
+    not(feature = "openblas")
+))]
+compile_error!(
+    "nuvai-mkl-src: aarch64-apple-darwin requires exactly one backend feature — \
+     enable `accelerate` (default) or `openblas`"
+);
+
 /// The link backend selected for the current build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -26,10 +41,10 @@ pub enum Backend {
 
 /// Select the link backend for the current target and Cargo features.
 ///
-/// On `aarch64-apple-darwin` the `openblas` feature selects OpenBLAS; anything
-/// else selects Accelerate. On every other target Intel MKL is used and the
-/// feature flags are ignored (they are no-ops because the aarch64 code is
-/// `cfg`-gated).
+/// On `aarch64-apple-darwin` the `openblas` feature selects OpenBLAS; the
+/// `accelerate` feature (default) selects Accelerate. Exactly one of the two
+/// must be enabled — a `compile_error!` above rejects the no-feature case. On
+/// every other target Intel MKL is used and the feature flags are ignored.
 pub fn backend() -> Backend {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {

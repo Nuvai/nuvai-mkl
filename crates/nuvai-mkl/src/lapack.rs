@@ -23,6 +23,91 @@ fn lapacke_layout(layout: Layout) -> i32 {
     }
 }
 
+/// Validate a `?gesv` call's buffers before any pointer reaches C/Fortran.
+///
+/// The underlying routines write `lda·n` elements of `A` and `ldb·nrhs`
+/// elements of `B` and `n` pivots, so an undersized slice is a heap
+/// out-of-bounds write reachable through the safe API. Reject it here.
+/// Row-major input is transposed through scratch first, so its minimum
+/// sizes are the trailing-element bounds `(n-1)·lda + n` and
+/// `(n-1)·ldb + nrhs` rather than the full leading-dimension products.
+fn check_solve_dims(
+    layout: Layout,
+    n: i32,
+    nrhs: i32,
+    a_len: usize,
+    lda: i32,
+    ipiv_len: usize,
+    b_len: usize,
+    ldb: i32,
+) -> Result<()> {
+    if n <= 0 || nrhs <= 0 {
+        return Err(Error::invalid("lapack: n and nrhs must be positive"));
+    }
+    if ipiv_len < n as usize {
+        return Err(Error::invalid("lapack: ipiv too short"));
+    }
+    let (a_min, b_min) = match layout {
+        Layout::ColMajor => {
+            if lda < n {
+                return Err(Error::invalid("lapack: lda < n"));
+            }
+            if ldb < n {
+                return Err(Error::invalid("lapack: ldb < n"));
+            }
+            (lda as usize * n as usize, ldb as usize * nrhs as usize)
+        }
+        Layout::RowMajor => {
+            if lda < n {
+                return Err(Error::invalid("lapack: lda < n (row-major)"));
+            }
+            if ldb < nrhs {
+                return Err(Error::invalid("lapack: ldb < nrhs (row-major)"));
+            }
+            (
+                (n - 1) as usize * lda as usize + n as usize,
+                (n - 1) as usize * ldb as usize + nrhs as usize,
+            )
+        }
+    };
+    if a_len < a_min {
+        return Err(Error::invalid("lapack: a too short"));
+    }
+    if b_len < b_min {
+        return Err(Error::invalid("lapack: b too short"));
+    }
+    Ok(())
+}
+
+/// Validate a `?getrf` call's buffers (writes `m × n` with leading
+/// dimension `lda`, plus `min(m,n)` pivots).
+fn check_factor_dims(
+    layout: Layout,
+    m: i32,
+    n: i32,
+    a_len: usize,
+    lda: i32,
+    ipiv_len: usize,
+) -> Result<()> {
+    if m <= 0 || n <= 0 {
+        return Err(Error::invalid("lapack: m and n must be positive"));
+    }
+    if lda < m {
+        return Err(Error::invalid("lapack: lda < m"));
+    }
+    if ipiv_len < m.min(n) as usize {
+        return Err(Error::invalid("lapack: ipiv too short"));
+    }
+    let a_min = match layout {
+        Layout::ColMajor => lda as usize * n as usize,
+        Layout::RowMajor => (m - 1) as usize * lda as usize + n as usize,
+    };
+    if a_len < a_min {
+        return Err(Error::invalid("lapack: a too short"));
+    }
+    Ok(())
+}
+
 /// Solve `A * X = B` for a general (non-symmetric) single-precision matrix.
 ///
 /// `a` is `n × n` in `layout` order (`lda ≥ n`) and `ipiv` must have length
@@ -39,8 +124,13 @@ pub fn sgesv(
     b: &mut [f32],
     ldb: i32,
 ) -> Result<()> {
+    check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?;
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
+        // SAFETY: `a`, `ipiv` and `b` cover at least the `lda·n`, `n` and
+        // `ldb·nrhs` elements (layout-adjusted) that `LAPACKE_sgesv` reads and
+        // writes, as enforced by `check_solve_dims` above. `n`, `lda` and `ldb`
+        // are non-negative by the same check.
         let info = unsafe {
             nuvai_mkl_sys::LAPACKE_sgesv(
                 lapacke_layout(layout),
@@ -75,8 +165,11 @@ pub fn dgesv(
     b: &mut [f64],
     ldb: i32,
 ) -> Result<()> {
+    check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?;
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
+        // SAFETY: buffers cover the `lda·n` / `n` / `ldb·nrhs` elements that
+        // `LAPACKE_dgesv` touches, per `check_solve_dims` above.
         let info = unsafe {
             nuvai_mkl_sys::LAPACKE_dgesv(
                 lapacke_layout(layout),
@@ -110,8 +203,11 @@ pub fn sgetrf(
     lda: i32,
     ipiv: &mut [i32],
 ) -> Result<()> {
+    check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
+        // SAFETY: `a` covers `lda·n` elements and `ipiv` covers `min(m,n)`,
+        // per `check_factor_dims` above; `m`, `n`, `lda` are non-negative.
         let info = unsafe {
             nuvai_mkl_sys::LAPACKE_sgetrf(lapacke_layout(layout), m, n, a.as_mut_ptr(), lda, ipiv.as_mut_ptr())
         };
@@ -135,8 +231,11 @@ pub fn dgetrf(
     lda: i32,
     ipiv: &mut [i32],
 ) -> Result<()> {
+    check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
+        // SAFETY: `a` covers `lda·n` elements and `ipiv` covers `min(m,n)`,
+        // per `check_factor_dims` above.
         let info = unsafe {
             nuvai_mkl_sys::LAPACKE_dgetrf(lapacke_layout(layout), m, n, a.as_mut_ptr(), lda, ipiv.as_mut_ptr())
         };
@@ -210,9 +309,13 @@ mod aarch64 {
         b: &mut [f32],
         ldb: i32,
     ) -> Result<()> {
+        check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?;
         let info = match layout {
             Layout::ColMajor => {
                 let mut info = 0i32;
+                // SAFETY: `a`/`ipiv`/`b` cover the `lda·n`/`n`/`ldb·nrhs`
+                // elements `sgesv_` touches (validated above); `n`, `nrhs`,
+                // `lda`, `ldb` and `info` are valid `const`/mutable refs.
                 unsafe {
                     nuvai_mkl_sys::sgesv_(
                         &n,
@@ -236,6 +339,9 @@ mod aarch64 {
                 let lda_cm = n;
                 let ldb_cm = n;
                 let mut info = 0i32;
+                // SAFETY: `a_cm`/`b_cm` are freshly allocated to exactly
+                // `n·n` and `n·nrhs`; `ipiv` covers `n` pivots and `info` is
+                // a valid out-arg (validated above).
                 unsafe {
                     nuvai_mkl_sys::sgesv_(
                         &n,
@@ -273,9 +379,12 @@ mod aarch64 {
         b: &mut [f64],
         ldb: i32,
     ) -> Result<()> {
+        check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?;
         let info = match layout {
             Layout::ColMajor => {
                 let mut info = 0i32;
+                // SAFETY: buffers cover the `lda·n`/`n`/`ldb·nrhs` elements
+                // `dgesv_` touches (validated above); `info` is a valid out-arg.
                 unsafe {
                     nuvai_mkl_sys::dgesv_(
                         &n,
@@ -298,6 +407,8 @@ mod aarch64 {
                 let lda_cm = n;
                 let ldb_cm = n;
                 let mut info = 0i32;
+                // SAFETY: `a_cm`/`b_cm` are freshly allocated to exactly
+                // `n·n`/`n·nrhs`; `ipiv` covers `n` pivots; `info` is valid.
                 unsafe {
                     nuvai_mkl_sys::dgesv_(
                         &n,
@@ -324,9 +435,12 @@ mod aarch64 {
     }
 
     pub fn sgetrf(layout: Layout, m: i32, n: i32, a: &mut [f32], lda: i32, ipiv: &mut [i32]) -> Result<()> {
+        check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
         let info = match layout {
             Layout::ColMajor => {
                 let mut info = 0i32;
+                // SAFETY: `a` covers `lda·n` and `ipiv` covers `min(m,n)`
+                // (validated above); `info` is a valid out-arg.
                 unsafe {
                     nuvai_mkl_sys::sgetrf_(&m, &n, a.as_mut_ptr(), &lda, ipiv.as_mut_ptr(), &mut info);
                 }
@@ -338,6 +452,8 @@ mod aarch64 {
                 row_to_col_f32(a, m, n, lda, &mut a_cm);
                 let lda_cm = m;
                 let mut info = 0i32;
+                // SAFETY: `a_cm` is freshly allocated to `m·n`; `ipiv` covers
+                // `min(m,n)`; `info` is a valid out-arg.
                 unsafe {
                     nuvai_mkl_sys::sgetrf_(&m, &n, a_cm.as_mut_ptr(), &lda_cm, ipiv.as_mut_ptr(), &mut info);
                 }
@@ -355,9 +471,12 @@ mod aarch64 {
     }
 
     pub fn dgetrf(layout: Layout, m: i32, n: i32, a: &mut [f64], lda: i32, ipiv: &mut [i32]) -> Result<()> {
+        check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
         let info = match layout {
             Layout::ColMajor => {
                 let mut info = 0i32;
+                // SAFETY: `a` covers `lda·n` and `ipiv` covers `min(m,n)`
+                // (validated above); `info` is a valid out-arg.
                 unsafe {
                     nuvai_mkl_sys::dgetrf_(&m, &n, a.as_mut_ptr(), &lda, ipiv.as_mut_ptr(), &mut info);
                 }
@@ -368,6 +487,8 @@ mod aarch64 {
                 row_to_col_f64(a, m, n, lda, &mut a_cm);
                 let lda_cm = m;
                 let mut info = 0i32;
+                // SAFETY: `a_cm` is freshly allocated to `m·n`; `ipiv` covers
+                // `min(m,n)`; `info` is a valid out-arg.
                 unsafe {
                     nuvai_mkl_sys::dgetrf_(&m, &n, a_cm.as_mut_ptr(), &lda_cm, ipiv.as_mut_ptr(), &mut info);
                 }

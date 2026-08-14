@@ -46,6 +46,10 @@ pub fn sgemm(
     c: &mut [f32],
     ldc: i32,
 ) -> Result<()> {
+    // SAFETY: soundness relies on the caller upholding the documented BLAS
+    // sizing contract (module header) — `a`/`b`/`c` must cover the
+    // transpose-adjusted `lda`/`ldb`/`ldc` elements `cblas_sgemm` reads/writes.
+    // This wrapper is a pass-through with no bounds checks, exactly like CBLAS.
     unsafe {
         nuvai_mkl_sys::cblas_sgemm(
             cblas_layout(layout),
@@ -85,6 +89,9 @@ pub fn dgemm(
     c: &mut [f64],
     ldc: i32,
 ) -> Result<()> {
+    // SAFETY: caller must size `a`/`b`/`c` per the BLAS convention (module
+    // header); `cblas_dgemm` reads/writes those transpose-adjusted leading-
+    // dimension elements via the forwarded raw pointers.
     unsafe {
         nuvai_mkl_sys::cblas_dgemm(
             cblas_layout(layout),
@@ -108,6 +115,8 @@ pub fn dgemm(
 
 /// `y := alpha * x + y`, single precision.
 pub fn saxpy(n: i32, alpha: f32, x: &[f32], incx: i32, y: &mut [f32], incy: i32) -> Result<()> {
+    // SAFETY: caller must size `x`/`y` to `n` elements at strides `incx`/`incy`
+    // per the BLAS convention (module header); `cblas_saxpy` reads/writes them.
     unsafe {
         nuvai_mkl_sys::cblas_saxpy(n, alpha, x.as_ptr(), incx, y.as_mut_ptr(), incy);
     }
@@ -116,6 +125,8 @@ pub fn saxpy(n: i32, alpha: f32, x: &[f32], incx: i32, y: &mut [f32], incy: i32)
 
 /// `y := alpha * x + y`, double precision.
 pub fn daxpy(n: i32, alpha: f64, x: &[f64], incx: i32, y: &mut [f64], incy: i32) -> Result<()> {
+    // SAFETY: caller must size `x`/`y` to `n` elements at strides `incx`/`incy`
+    // per the BLAS convention (module header); `cblas_daxpy` reads/writes them.
     unsafe {
         nuvai_mkl_sys::cblas_daxpy(n, alpha, x.as_ptr(), incx, y.as_mut_ptr(), incy);
     }
@@ -124,16 +135,22 @@ pub fn daxpy(n: i32, alpha: f64, x: &[f64], incx: i32, y: &mut [f64], incy: i32)
 
 /// `dot := xᵀ · y`, single precision.
 pub fn sdot(n: i32, x: &[f32], incx: i32, y: &[f32], incy: i32) -> f32 {
+    // SAFETY: caller must size `x`/`y` to `n` elements at strides `incx`/`incy`
+    // per the BLAS convention; `cblas_sdot` only reads them.
     unsafe { nuvai_mkl_sys::cblas_sdot(n, x.as_ptr(), incx, y.as_ptr(), incy) }
 }
 
 /// `dot := xᵀ · y`, double precision.
 pub fn ddot(n: i32, x: &[f64], incx: i32, y: &[f64], incy: i32) -> f64 {
+    // SAFETY: caller must size `x`/`y` to `n` elements at strides `incx`/`incy`
+    // per the BLAS convention; `cblas_ddot` only reads them.
     unsafe { nuvai_mkl_sys::cblas_ddot(n, x.as_ptr(), incx, y.as_ptr(), incy) }
 }
 
 /// `x := alpha * x`, single precision.
 pub fn sscal(n: i32, alpha: f32, x: &mut [f32], incx: i32) -> Result<()> {
+    // SAFETY: caller must size `x` to `n` elements at stride `incx` per the
+    // BLAS convention (module header); `cblas_sscal` writes them.
     unsafe {
         nuvai_mkl_sys::cblas_sscal(n, alpha, x.as_mut_ptr(), incx);
     }
@@ -142,6 +159,8 @@ pub fn sscal(n: i32, alpha: f32, x: &mut [f32], incx: i32) -> Result<()> {
 
 /// `x := alpha * x`, double precision.
 pub fn dscal(n: i32, alpha: f64, x: &mut [f64], incx: i32) -> Result<()> {
+    // SAFETY: caller must size `x` to `n` elements at stride `incx` per the
+    // BLAS convention (module header); `cblas_dscal` writes them.
     unsafe {
         nuvai_mkl_sys::cblas_dscal(n, alpha, x.as_mut_ptr(), incx);
     }

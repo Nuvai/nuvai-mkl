@@ -37,6 +37,37 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --target aarch64-apple-darwin --workspace --all-targets -- -D warnings
 
+  # Apple Silicon + OpenBLAS: the `openblas` feature swaps vecLib for OpenBLAS
+  # (BLAS/LAPACK only; FFT/VML/sparse/VSL still use Accelerate). Exercises the
+  # --no-default-features path that must fail loudly without a backend.
+  aarch64-darwin-openblas:
+    name: aarch64-apple-darwin (OpenBLAS)
+    runs-on: macos-14-xlarge # public Apple Silicon runner (arm64)
+    env:
+      # openblas is keg-only, so `-lopenblas` needs an explicit search path.
+      RUSTFLAGS: "-L /opt/homebrew/opt/openblas/lib"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenBLAS
+        run: brew install openblas
+
+      - name: Install stable toolchain (native aarch64-apple-darwin)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: target
+
+      - name: cargo check (openblas)
+        run: cargo check --target aarch64-apple-darwin --workspace --no-default-features --features openblas
+
+      - name: cargo test (openblas)
+        run: cargo test --target aarch64-apple-darwin --workspace --no-default-features --features openblas
+
   # x86_64 Linux: Intel oneMKL acquired by nuvai-mkl-src at build time
   # (conda-forge download into ~/.cache/nuvai-mkl). libclang is required by the
   # nuvai-mkl-sys bindgen pass.

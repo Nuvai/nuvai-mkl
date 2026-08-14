@@ -17,7 +17,9 @@ fn check(src: usize, dst: usize, name: &str) -> Result<c_int> {
     if src != dst {
         return Err(Error::invalid(format!("{name}: src/dst length mismatch")));
     }
-    Ok(src as c_int)
+    // The C routine takes the length as `int`; a vector longer than `i32::MAX`
+    // would truncate and silently process only a prefix. Reject it up front.
+    c_int::try_from(src).map_err(|_| Error::invalid(format!("{name}: length exceeds i32::MAX")))
 }
 
 /// Generate one unary VML function.
@@ -32,11 +34,15 @@ macro_rules! vml_unary {
             let n = check(src.len(), dst.len(), stringify!($name))?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
+                // SAFETY: `src`/`dst` have equal length `n` (checked above);
+                // vForce reads `n` elements from `src` and writes `n` to `dst`.
                 unsafe { nuvai_mkl_sys::$vforce(dst.as_mut_ptr(), src.as_ptr(), &n) };
                 Ok(())
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
             {
+                // SAFETY: `src`/`dst` have equal length `n` (checked above);
+                // VML reads `n` elements from `src` and writes `n` to `dst`.
                 unsafe { nuvai_mkl_sys::$mkl(n, src.as_ptr(), dst.as_mut_ptr()) };
                 Ok(())
             }

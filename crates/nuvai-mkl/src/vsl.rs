@@ -11,6 +11,7 @@
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::cell::RefCell;
+use std::marker::PhantomData;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 use std::os::raw::c_int;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -37,6 +38,12 @@ type StreamState = RefCell<ChaCha20Rng>;
 /// A random-number stream.
 pub struct Stream {
     state: StreamState,
+    /// Pin auto-trait parity across backends. The Intel backend's raw
+    /// `VSLStreamStatePtr` is `!Send + !Sync`, but the aarch64
+    /// `RefCell<ChaCha20Rng>` would be `Send` (still `!Sync`). A raw-pointer
+    /// `PhantomData` is `!Send + !Sync`, so it makes the aarch64 backend match
+    /// Intel instead of leaking `Send` on only one platform.
+    _not_send_sync: PhantomData<*const ()>,
 }
 
 impl Stream {
@@ -51,11 +58,15 @@ impl Stream {
             let rng = ChaCha20Rng::seed_from_u64(seed as u64);
             Ok(Self {
                 state: RefCell::new(rng),
+                _not_send_sync: PhantomData,
             })
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
             let mut state: nuvai_mkl_sys::VSLStreamStatePtr = ptr::null_mut();
+            // SAFETY: `state` is a valid out-param; `VSL_BRNG_MT19937` and
+            // `seed` are valid arguments; on `status == 0` `state` holds a
+            // valid VSL stream (checked below).
             let status = unsafe {
                 nuvai_mkl_sys::vslNewStream(
                     &mut state,
@@ -66,12 +77,23 @@ impl Stream {
             if status != 0 {
                 return Err(Error::mkl(status, "vslNewStream"));
             }
-            Ok(Self { state })
+            Ok(Self {
+                state,
+                _not_send_sync: PhantomData,
+            })
         }
     }
 
     /// Fill `out` with uniforms in `[a, b)` (single precision).
     pub fn uniform(&self, a: f32, b: f32, out: &mut [f32]) -> Result<()> {
+        // `a..b` is empty (or NaN) when `a >= b`: Intel VSL returns
+        // `VSL_ERROR_BADARGS`, but the aarch64 `rand` backend would panic.
+        // Reject it up front so both backends fail identically with an error.
+        // `partial_cmp` is `None` for NaN and `Some(Greater|Equal)` for `a >= b`,
+        // so only `Some(Less)` is an acceptable non-empty range.
+        if a.partial_cmp(&b) != Some(std::cmp::Ordering::Less) {
+            return Err(Error::invalid("uniform: a must be < b (empty range)"));
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut rng = self.state.borrow_mut();
@@ -83,6 +105,9 @@ impl Stream {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
             let n = out.len() as c_int;
+            // SAFETY: `self.state` is a valid stream from `new`; `out` is a
+            // mutable slice of `n` elements; the method constant and `a`/`b`
+            // (validated `a < b` above) are valid arguments.
             let status = unsafe {
                 nuvai_mkl_sys::vsRngUniform(
                     nuvai_mkl_sys::VSL_RNG_METHOD_UNIFORM_STD as c_int,
@@ -102,6 +127,11 @@ impl Stream {
 
     /// Fill `out` with uniforms in `[a, b)` (double precision).
     pub fn uniform64(&self, a: f64, b: f64, out: &mut [f64]) -> Result<()> {
+        // See `uniform`: reject the empty/NaN range that would panic the
+        // aarch64 `rand` backend, matching Intel VSL's error behaviour.
+        if a.partial_cmp(&b) != Some(std::cmp::Ordering::Less) {
+            return Err(Error::invalid("uniform64: a must be < b (empty range)"));
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut rng = self.state.borrow_mut();
@@ -113,6 +143,9 @@ impl Stream {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
             let n = out.len() as c_int;
+            // SAFETY: `self.state` is a valid stream; `out` is a mutable slice
+            // of `n` elements; the method constant and `a`/`b` (validated
+            // `a < b` above) are valid arguments.
             let status = unsafe {
                 nuvai_mkl_sys::vdRngUniform(
                     nuvai_mkl_sys::VSL_RNG_METHOD_UNIFORM_STD as c_int,
@@ -145,6 +178,9 @@ impl Stream {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
             let n = out.len() as c_int;
+            // SAFETY: `self.state` is a valid stream; `out` is a mutable slice
+            // of `n` elements; the method constant and `mean`/`sigma` are valid
+            // arguments.
             let status = unsafe {
                 nuvai_mkl_sys::vsRngGaussian(
                     nuvai_mkl_sys::VSL_RNG_METHOD_GAUSSIAN_BOXMULLER2 as c_int,
@@ -177,6 +213,9 @@ impl Stream {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
             let n = out.len() as c_int;
+            // SAFETY: `self.state` is a valid stream; `out` is a mutable slice
+            // of `n` elements; the method constant and `mean`/`sigma` are valid
+            // arguments.
             let status = unsafe {
                 nuvai_mkl_sys::vdRngGaussian(
                     nuvai_mkl_sys::VSL_RNG_METHOD_GAUSSIAN_BOXMULLER2 as c_int,
@@ -203,6 +242,8 @@ impl Drop for Stream {
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
+            // SAFETY: `self.state` is a valid stream created in `new` and is
+            // deleted exactly once here.
             unsafe {
                 nuvai_mkl_sys::vslDeleteStream(&mut self.state);
             }

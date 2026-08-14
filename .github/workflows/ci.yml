@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install nightly 1.99 toolchain (native aarch64-apple-darwin)
-        uses: dtolnay/rust-toolchain@nightly-2026-08-14
+        uses: dtolnay/rust-toolchain@nightly
         with:
           targets: aarch64-apple-darwin
           components: clippy, rustfmt
@@ -53,7 +53,7 @@ jobs:
         run: brew install openblas
 
       - name: Install nightly 1.99 toolchain (native aarch64-apple-darwin)
-        uses: dtolnay/rust-toolchain@nightly-2026-08-14
+        uses: dtolnay/rust-toolchain@nightly
         with:
           targets: aarch64-apple-darwin
           components: clippy, rustfmt
@@ -81,7 +81,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
       - name: Install nightly 1.99 toolchain
-        uses: dtolnay/rust-toolchain@nightly-2026-08-14
+        uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy, rustfmt
 
@@ -120,7 +120,7 @@ jobs:
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
       - name: Install nightly 1.99 toolchain (native x86_64-pc-windows-msvc)
-        uses: dtolnay/rust-toolchain@nightly-2026-08-14
+        uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy, rustfmt
 

@@ -5,19 +5,43 @@
 // headers for bindgen). It locates oneMKL 2026.1.0 on the system, or
 // downloads + extracts it from conda-forge into a shared cache.
 
+#[cfg(not(target_arch = "aarch64"))]
 use std::env;
+#[cfg(not(target_arch = "aarch64"))]
 use std::fs;
+#[cfg(not(target_arch = "aarch64"))]
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(not(target_arch = "aarch64"))]
+use sha2::Digest;
+#[cfg(not(target_arch = "aarch64"))]
+use std::path::Path;
 
 /// The oneMKL version this crate acquires and links.
 pub const MKL_VERSION: &str = "2026.1.0";
 
+#[cfg(not(target_arch = "aarch64"))]
 const CONDA_BASE: &str = "https://conda.anaconda.org/conda-forge";
+#[cfg(not(target_arch = "aarch64"))]
 const LINUX_MKL: &str = "mkl-2026.1.0-hecca717_243.conda";
+#[cfg(not(target_arch = "aarch64"))]
 const LINUX_INCLUDE: &str = "mkl-include-2026.1.0-ha770c72_243.conda";
+#[cfg(not(target_arch = "aarch64"))]
 const WIN_MKL: &str = "mkl-2026.1.0-hac47afa_233.conda";
+#[cfg(not(target_arch = "aarch64"))]
 const WIN_INCLUDE: &str = "mkl-include-2026.1.0-h57928b3_233.conda";
+
+// SHA-256 of each pinned conda-forge package (from api.anaconda.org/dist).
+// Pinning the digest lets `download()` reject a tampered or corrupted archive
+// before it is extracted into the linker search path.
+#[cfg(not(target_arch = "aarch64"))]
+const LINUX_MKL_SHA256: &str = "c68967a13488684d87fb7ac77b73c6f3f825f2da403707a14e75374c0ce3629f";
+#[cfg(not(target_arch = "aarch64"))]
+const LINUX_INCLUDE_SHA256: &str = "6a8869386f70c5b9d49d02872cf172d2b2a84687509be54f40a5a1c4eddafa97";
+#[cfg(not(target_arch = "aarch64"))]
+const WIN_MKL_SHA256: &str = "ff355522fb0b6e33841167d9ca749147c8734d8be07b63b2ce25b0db043f42ed";
+#[cfg(not(target_arch = "aarch64"))]
+const WIN_INCLUDE_SHA256: &str = "b8809ceb7ad6a48392dcfdc806959a5cbd7bd906c2a996c5650096694f3694e4";
 
 /// Resolved location of an MKL install.
 #[derive(Debug, Clone)]
@@ -29,14 +53,32 @@ pub struct MklInfo {
 }
 
 /// Locate MKL: a system oneAPI install first, then download from conda-forge.
+///
+/// Intel ships no oneMKL for *any* aarch64 target (Apple Silicon or Linux/ARM),
+/// so on `aarch64` this panics with a clear pointer to the fallback path. The
+/// build script never calls it there (it dispatches on [`backend`] instead), so
+/// this guard only fires if a downstream build script calls `locate()` directly
+/// on aarch64.
 pub fn locate() -> MklInfo {
-    if let Some(info) = system_mkl() {
-        return info;
+    #[cfg(target_arch = "aarch64")]
+    {
+        panic!(
+            "Intel oneMKL is unavailable on aarch64 (Intel ships x86_64 builds only); \
+             select the Accelerate (macOS) or OpenBLAS fallback via \
+             nuvai_mkl_src::backend() instead of nuvai_mkl_src::locate()"
+        );
     }
-    download_mkl()
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        if let Some(info) = system_mkl() {
+            return info;
+        }
+        download_mkl()
+    }
 }
 
 /// Detect a system oneAPI install via `MKLROOT` or a well-known path.
+#[cfg(not(target_arch = "aarch64"))]
 fn system_mkl() -> Option<MklInfo> {
     let root = env::var("MKLROOT")
         .ok()
@@ -61,13 +103,14 @@ fn system_mkl() -> Option<MklInfo> {
 }
 
 /// Download + extract MKL into the shared cache, returning its paths.
+#[cfg(not(target_arch = "aarch64"))]
 fn download_mkl() -> MklInfo {
     let pkg_dir = cache_dir().join(format!("mkl-{MKL_VERSION}"));
 
-    let (mkl_file, include_file) =
+    let ((mkl_file, mkl_sha), (include_file, include_sha)) =
         match (cfg!(target_os = "linux"), cfg!(target_os = "windows"), cfg!(target_os = "macos")) {
-            (true, _, _) => (LINUX_MKL, LINUX_INCLUDE),
-            (_, true, _) => (WIN_MKL, WIN_INCLUDE),
+            (true, _, _) => ((LINUX_MKL, LINUX_MKL_SHA256), (LINUX_INCLUDE, LINUX_INCLUDE_SHA256)),
+            (_, true, _) => ((WIN_MKL, WIN_MKL_SHA256), (WIN_INCLUDE, WIN_INCLUDE_SHA256)),
             (_, _, true) => panic!(
                 "macOS NuGet acquisition is not yet wired; install oneAPI and set MKLROOT."
             ),
@@ -77,8 +120,8 @@ fn download_mkl() -> MklInfo {
             ),
         };
 
-    let mkl_root = fetch_and_extract_conda(mkl_file, &pkg_dir);
-    let include_root = fetch_and_extract_conda(include_file, &pkg_dir);
+    let mkl_root = fetch_and_extract_conda(mkl_file, mkl_sha, &pkg_dir);
+    let include_root = fetch_and_extract_conda(include_file, include_sha, &pkg_dir);
 
     MklInfo {
         // conda packages lay out headers under `include/` and libs under `lib/`.
@@ -87,12 +130,16 @@ fn download_mkl() -> MklInfo {
     }
 }
 
-fn fetch_and_extract_conda(file: &str, pkg_dir: &Path) -> PathBuf {
+#[cfg(not(target_arch = "aarch64"))]
+fn fetch_and_extract_conda(file: &str, sha256: &str, pkg_dir: &Path) -> PathBuf {
     let url = format!("{CONDA_BASE}/{}/{}", conda_subdir(), file);
     let dest = pkg_dir.join(file);
     if !dest.exists() {
         download(&url, &dest);
     }
+    // Verify both freshly downloaded and cached archives: a corrupted or
+    // tampered cache file must fail loudly rather than reach the linker path.
+    verify_sha256(&dest, sha256, file);
     let out = pkg_dir.join(file.trim_end_matches(".conda"));
     if !out.exists() {
         fs::create_dir_all(&out).expect("create conda extract dir");
@@ -101,6 +148,34 @@ fn fetch_and_extract_conda(file: &str, pkg_dir: &Path) -> PathBuf {
     out
 }
 
+/// Confirm `path` hashes to `expected` (the pinned conda-forge digest),
+/// panicking with a clear pointer to clear the cache if it does not.
+#[cfg(not(target_arch = "aarch64"))]
+fn verify_sha256(path: &Path, expected: &str, file: &str) {
+    let mut archive = fs::File::open(path)
+        .unwrap_or_else(|e| panic!("open downloaded archive {}: {e}", path.display()));
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = archive
+            .read(&mut buf)
+            .unwrap_or_else(|e| panic!("hash downloaded archive {}: {e}", path.display()));
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected {
+        panic!(
+            "checksum mismatch for {file}: expected {expected}, got {actual}. \
+             Delete {} and retry.",
+            path.display()
+        );
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
 fn conda_subdir() -> &'static str {
     if cfg!(target_os = "windows") {
         "win-64"
@@ -109,6 +184,7 @@ fn conda_subdir() -> &'static str {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn cache_dir() -> PathBuf {
     let base = env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -119,6 +195,7 @@ fn cache_dir() -> PathBuf {
     dir
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn download(url: &str, dest: &Path) {
     eprintln!("[nuvai-mkl-src] downloading {url}");
     let resp = ureq::get(url)
@@ -135,6 +212,7 @@ fn download(url: &str, dest: &Path) {
 }
 
 /// A `.conda` file is a ZIP containing `info-*.tar.zst` and `pkg-*.tar.zst`.
+#[cfg(not(target_arch = "aarch64"))]
 fn extract_conda(conda_path: &Path, dest: &Path) {
     let file = fs::File::open(conda_path).expect("open .conda");
     let mut zip = zip::ZipArchive::new(file).expect("open .conda as zip");

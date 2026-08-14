@@ -11,9 +11,29 @@ keywords.workspace = true
 categories.workspace = true
 build = "build.rs"
 
+[features]
+default = ["accelerate"]
+# Link backend on Apple Silicon. "accelerate" is the default; "openblas"
+# opts into OpenBLAS instead. On Intel targets these features are inert
+# (the backend is always oneMKL), but selecting one still enables aarch64
+# builds to compile. At most one should be enabled; if both are, the
+# selection is made explicitly via `nuvai_mkl_src::backend()`.
+accelerate = ["nuvai-mkl-src/accelerate"]
+openblas = ["nuvai-mkl-src/openblas"]
+
 [dependencies]
 nuvai-mkl-sys = { workspace = true }
 nuvai-mkl-src = { workspace = true }
+
+# VSL random-number backend on Apple Silicon (see ADR-0003 decision 6: the
+# sequence is statistically-valid but not identical to Intel VSL). These are
+# aarch64-only so the Intel build pulls in no extra dependencies.
+# Versions researched 2026-08-13: rand 0.10.2, rand_chacha 0.10.0,
+# rand_distr 0.6.0 — all current stable, MSRV 1.85, actively maintained.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+rand = { version = "0.10.2", default-features = false, features = ["std"] }
+rand_chacha = "0.10.0"
+rand_distr = "0.6.0"
 
 [build-dependencies]
 nuvai-mkl-src = { workspace = true }

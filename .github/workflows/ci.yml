@@ -97,3 +97,64 @@ jobs:
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets
+
+  # x86_64 Windows MSVC: Intel oneMKL acquired by nuvai-mkl-src at build time
+  # (conda-forge download into %USERPROFILE%\.cache\nuvai-mkl — HOME is commonly
+  # unset on Windows). The win-64 `mkl` package ships 26 DLLs but no import
+  # libs; `mkl-devel` provides `mkl_rt.lib` (→ `mkl_rt.3.dll`). bindgen needs
+  # LLVM/libclang, so it is installed via Chocolatey.
+  x86_64-windows:
+    name: x86_64-pc-windows-msvc (Intel MKL)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM (bindgen)
+        shell: pwsh
+        run: choco install llvm --no-progress -y
+
+      - name: Add LLVM to PATH
+        shell: pwsh
+        run: |
+          "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      - name: Install stable toolchain (native x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: target
+
+      - name: Cache MKL conda download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/nuvai-mkl
+          key: nuvai-mkl-conda-win-${{ hashFiles('crates/nuvai-mkl-src/src/acquire.rs') }}
+
+      - name: cargo check
+        run: cargo check --workspace
+
+      # Windows has no rpath: the loader resolves mkl_rt.3.dll from PATH at
+      # process start. Prepend the MKL DLL directory (deterministic cache
+      # layout: <cache>/mkl-2026.1.0/<mkl-pkg>/Library/bin) before running the
+      # tests so the 6 domain smoke tests can load it without a manual copy.
+      - name: Add MKL DLL dir to PATH
+        shell: pwsh
+        run: |
+          $pkg = Get-ChildItem "$env:USERPROFILE\.cache\nuvai-mkl\mkl-2026.1.0" -Directory |
+            Where-Object { $_.Name -like 'mkl-2026.1.0-*' } |
+            Select-Object -First 1
+          if (-not $pkg) { throw "MKL package dir not found under ~/.cache/nuvai-mkl/mkl-2026.1.0" }
+          $dllDir = Join-Path $pkg.FullName "Library\bin"
+          if (-not (Test-Path $dllDir)) { throw "MKL DLL dir not found: $dllDir" }
+          Write-Host "MKL DLL dir: $dllDir"
+          "$dllDir" >> $env:GITHUB_PATH
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets

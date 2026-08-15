@@ -45,12 +45,12 @@ fn main() {
             // contributes its `lib` dir to the search path and rpath.
             #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
             {
-                if let Ok(root) = std::env::var("OPENBLAS_ROOT") {
-                    if !root.trim().is_empty() {
-                        let lib = format!("{root}/lib");
-                        println!("cargo:rustc-link-search=native={lib}");
-                        println!("cargo:rustc-link-arg=-Wl,-rpath,{lib}");
-                    }
+                if let Ok(root) = std::env::var("OPENBLAS_ROOT")
+                    && !root.trim().is_empty()
+                {
+                    let lib = format!("{root}/lib");
+                    println!("cargo:rustc-link-search=native={lib}");
+                    println!("cargo:rustc-link-arg=-Wl,-rpath,{lib}");
                 }
             }
         }

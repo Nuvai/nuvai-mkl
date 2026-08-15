@@ -4,7 +4,9 @@
 //! 1D complex-to-complex DFT descriptor). On Apple Silicon
 //! (`aarch64-apple-darwin`) it wraps a pair of vDSP DFT setups (one per
 //! direction), since vDSP makes the direction a creation parameter rather than
-//! a per-call argument.
+//! a per-call argument. On `aarch64-unknown-linux-gnu` there is no FFT backend
+//! (OpenBLAS covers only BLAS/LAPACK), so every [`FftPlan`] operation returns
+//! [`ErrorKind::Unsupported`].
 //!
 //! The forward transform is unnormalized; the backward transform applies the
 //! default `1/n` scaling, so `backward(forward(x)) == x`. On aarch64 the vDSP
@@ -13,7 +15,7 @@
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::cell::RefCell;
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 use std::ptr;
 
 use crate::error::{Error, Result};
@@ -22,7 +24,7 @@ pub use nuvai_mkl_sys::{MKL_Complex16, MKL_Complex8};
 
 /// Opaque plan handle. On Intel this is the committed DFTI descriptor; on
 /// aarch64 it holds the forward + inverse vDSP DFT setups and the precision.
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 type FftHandle = nuvai_mkl_sys::DFTI_DESCRIPTOR_HANDLE;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -39,7 +41,16 @@ struct FftHandle {
     scratch64: RefCell<Option<(Vec<f64>, Vec<f64>)>>,
 }
 
+/// Uninhabited-in-practice handle on `aarch64-unknown-linux-gnu`: no FFT
+/// backend exists there, so every [`FftPlan`] creation returns
+/// [`ErrorKind::Unsupported`] and no handle is ever constructed.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+struct FftHandle;
+
 /// A committed 1D complex-to-complex DFT plan.
+// On `aarch64-unknown-linux-gnu` no `FftPlan` can be constructed, so the
+// `handle`/`len` fields are never read there.
+#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
 pub struct FftPlan {
     handle: FftHandle,
     len: usize,
@@ -59,6 +70,13 @@ impl FftPlan {
     fn create(len: usize, single: bool) -> Result<Self> {
         if len == 0 {
             return Err(Error::invalid("FFT length must be positive"));
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No FFT backend on aarch64-unknown-linux-gnu (OpenBLAS covers
+            // only BLAS/LAPACK).
+            let _ = (len, single);
+            Err(Error::unsupported_linux_aarch64("FFT"))
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
@@ -135,7 +153,7 @@ impl FftPlan {
                 len,
             })
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             let len = len as i64;
             let precision = if single {
@@ -226,12 +244,16 @@ impl FftPlan {
     /// Forward transform (single precision), `input → output`.
     pub fn forward_c32(&self, input: &[MKL_Complex8], output: &mut [MKL_Complex8]) -> Result<()> {
         self.check(input.len(), output.len())?;
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            Err(Error::unsupported_linux_aarch64("FFT"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             self.transform_c32(input, output, false);
             Ok(())
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             // SAFETY: `self.handle` is a committed descriptor; `input`/`output`
             // are exactly `self.len` complex elements (validated by `self.check`)
@@ -253,12 +275,16 @@ impl FftPlan {
     /// Backward transform (single precision), `input → output` (scaled by `1/n`).
     pub fn backward_c32(&self, input: &[MKL_Complex8], output: &mut [MKL_Complex8]) -> Result<()> {
         self.check(input.len(), output.len())?;
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            Err(Error::unsupported_linux_aarch64("FFT"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             self.transform_c32(input, output, true);
             Ok(())
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             // SAFETY: as `forward_c32` — committed descriptor and length-matched
             // buffers validated by `self.check`.
@@ -279,12 +305,16 @@ impl FftPlan {
     /// Forward transform (double precision), `input → output`.
     pub fn forward_c64(&self, input: &[MKL_Complex16], output: &mut [MKL_Complex16]) -> Result<()> {
         self.check(input.len(), output.len())?;
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            Err(Error::unsupported_linux_aarch64("FFT"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             self.transform_c64(input, output, false);
             Ok(())
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             // SAFETY: as `forward_c32` — committed descriptor and length-matched
             // buffers validated by `self.check`.
@@ -305,12 +335,16 @@ impl FftPlan {
     /// Backward transform (double precision), `input → output` (scaled by `1/n`).
     pub fn backward_c64(&self, input: &[MKL_Complex16], output: &mut [MKL_Complex16]) -> Result<()> {
         self.check(input.len(), output.len())?;
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            Err(Error::unsupported_linux_aarch64("FFT"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             self.transform_c64(input, output, true);
             Ok(())
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             // SAFETY: as `forward_c32` — committed descriptor and length-matched
             // buffers validated by `self.check`.
@@ -399,6 +433,11 @@ impl FftPlan {
 
 impl Drop for FftPlan {
     fn drop(&mut self) {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No FFT backend on aarch64-unknown-linux-gnu: an `FftPlan` can
+            // never be created here, so there is nothing to release.
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             // SAFETY: `self.handle.forward`/`inverse` are valid setups created
@@ -414,7 +453,7 @@ impl Drop for FftPlan {
                 }
             }
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             // SAFETY: `self.handle` is a valid committed descriptor (or null);
             // freeing it once here releases the MKL resources.

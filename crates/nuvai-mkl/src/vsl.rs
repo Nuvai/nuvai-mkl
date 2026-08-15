@@ -6,15 +6,16 @@
 //! sequence is statistically valid but not identical to Intel VSL). Both
 //! backends expose the same [`Stream`] API and mutate on `&self` (VSL streams
 //! are internally mutable; the aarch64 backend uses [`std::cell::RefCell`]).
-//! Streams are not `Sync`; share one behind a lock when cross-thread
-//! randomness is required.
+//! On `aarch64-unknown-linux-gnu` there is no VSL backend, so every method
+//! returns [`ErrorKind::Unsupported`]. Streams are not `Sync`; share one behind
+//! a lock when cross-thread randomness is required.
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::cell::RefCell;
 use std::marker::PhantomData;
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 use std::os::raw::c_int;
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 use std::ptr;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -30,12 +31,19 @@ use crate::error::{Error, Result};
 
 /// Opaque stream state. On Intel this is the VSL stream pointer; on aarch64 it
 /// is a ChaCha20 RNG behind `RefCell` for interior mutability on `&self`.
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 type StreamState = nuvai_mkl_sys::VSLStreamStatePtr;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 type StreamState = RefCell<ChaCha20Rng>;
+/// No VSL backend on `aarch64-unknown-linux-gnu`: [`Stream`] is never
+/// constructed there (every method returns [`ErrorKind::Unsupported`]).
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+type StreamState = ();
 
 /// A random-number stream.
+// On `aarch64-unknown-linux-gnu` no `Stream` can be constructed, so `state` is
+// never read there.
+#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
 pub struct Stream {
     state: StreamState,
     /// Pin auto-trait parity across backends. The Intel backend's raw
@@ -53,6 +61,12 @@ impl Stream {
     /// seeded deterministically from `seed` (both reproduce their sequence for
     /// the same seed, but the two platforms do not produce identical streams).
     pub fn new(seed: u32) -> Result<Self> {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No VSL backend on aarch64-unknown-linux-gnu.
+            let _ = seed;
+            Err(Error::unsupported_linux_aarch64("VSL"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let rng = ChaCha20Rng::seed_from_u64(seed as u64);
@@ -61,7 +75,7 @@ impl Stream {
                 _not_send_sync: PhantomData,
             })
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             let mut state: nuvai_mkl_sys::VSLStreamStatePtr = ptr::null_mut();
             // SAFETY: `state` is a valid out-param; `VSL_BRNG_MT19937` and
@@ -94,6 +108,12 @@ impl Stream {
         if a.partial_cmp(&b) != Some(std::cmp::Ordering::Less) {
             return Err(Error::invalid("uniform: a must be < b (empty range)"));
         }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No VSL backend on aarch64-unknown-linux-gnu.
+            let _ = out;
+            Err(Error::unsupported_linux_aarch64("VSL"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut rng = self.state.borrow_mut();
@@ -102,7 +122,7 @@ impl Stream {
             }
             Ok(())
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             let n = out.len() as c_int;
             // SAFETY: `self.state` is a valid stream from `new`; `out` is a
@@ -132,6 +152,12 @@ impl Stream {
         if a.partial_cmp(&b) != Some(std::cmp::Ordering::Less) {
             return Err(Error::invalid("uniform64: a must be < b (empty range)"));
         }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No VSL backend on aarch64-unknown-linux-gnu.
+            let _ = out;
+            Err(Error::unsupported_linux_aarch64("VSL"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut rng = self.state.borrow_mut();
@@ -140,7 +166,7 @@ impl Stream {
             }
             Ok(())
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             let n = out.len() as c_int;
             // SAFETY: `self.state` is a valid stream; `out` is a mutable slice
@@ -165,6 +191,12 @@ impl Stream {
 
     /// Fill `out` with normals `N(mean, sigma²)` (single precision).
     pub fn gaussian(&self, mean: f32, sigma: f32, out: &mut [f32]) -> Result<()> {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No VSL backend on aarch64-unknown-linux-gnu.
+            let _ = (mean, sigma, out);
+            Err(Error::unsupported_linux_aarch64("VSL"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let distr = Normal::new(mean, sigma)
@@ -175,7 +207,7 @@ impl Stream {
             }
             Ok(())
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             let n = out.len() as c_int;
             // SAFETY: `self.state` is a valid stream; `out` is a mutable slice
@@ -200,6 +232,12 @@ impl Stream {
 
     /// Fill `out` with normals `N(mean, sigma²)` (double precision).
     pub fn gaussian64(&self, mean: f64, sigma: f64, out: &mut [f64]) -> Result<()> {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No VSL backend on aarch64-unknown-linux-gnu.
+            let _ = (mean, sigma, out);
+            Err(Error::unsupported_linux_aarch64("VSL"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let distr = Normal::new(mean, sigma)
@@ -210,7 +248,7 @@ impl Stream {
             }
             Ok(())
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             let n = out.len() as c_int;
             // SAFETY: `self.state` is a valid stream; `out` is a mutable slice
@@ -236,11 +274,16 @@ impl Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No VSL backend on aarch64-unknown-linux-gnu: a `Stream` can
+            // never be constructed there, so there is nothing to release.
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             // `ChaCha20Rng` is owned and needs no teardown.
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             // SAFETY: `self.state` is a valid stream created in `new` and is
             // deleted exactly once here.

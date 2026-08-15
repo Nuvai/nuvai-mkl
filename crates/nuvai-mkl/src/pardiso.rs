@@ -5,11 +5,25 @@
 //! factorization → solve phases. On Apple Silicon (`aarch64-apple-darwin`) the
 //! same CSR input is transposed to CSC and solved with the Accelerate
 //! Sparse/SparseSolve backend (`_SparseFactorQR_Double` +
-//! `_SparseSolveOpaque_Double`, ADR-0003 decision 7).
+//! `_SparseSolveOpaque_Double`, ADR-0003 decision 7). On
+//! `aarch64-unknown-linux-gnu` there is no sparse backend (OpenBLAS covers only
+//! BLAS/LAPACK), so every [`Pardiso::solve`] returns
+//! [`ErrorKind::Unsupported`].
 
+// `c_void`/`ptr` are used by the Intel path and the Accelerate (macOS-aarch64)
+// helpers but not by the linux-aarch64 Unsupported path, so gate them to every
+// target except the inert linux-aarch64 arm.
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    not(target_arch = "aarch64")
+))]
 use std::os::raw::c_void;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::os::raw::c_long;
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    not(target_arch = "aarch64")
+))]
 use std::ptr;
 
 use crate::error::{Error, Result};
@@ -31,7 +45,7 @@ pub mod mtype {
 /// Silicon the Accelerate backend performs a self-contained factor+solve per
 /// call and keeps only the caller's `mtype`, so the handle carries no inert
 /// 768-byte PARDISO state.
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 pub struct Pardiso {
     pt: [*mut c_void; 64],
     mtype: i32,
@@ -45,10 +59,18 @@ pub struct Pardiso {
     mtype: i32,
 }
 
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub struct Pardiso {
+    // No PARDISO backend on this target: the handle is inert (mtype is never
+    // read because every `solve` returns Unsupported).
+    #[allow(dead_code)]
+    mtype: i32,
+}
+
 impl Pardiso {
     /// Create a handle for the given matrix type.
     pub fn new(mtype: i32) -> Self {
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             let mut iparm = [0i32; 64];
             iparm[0] = 1; // use default `iparm` values
@@ -71,17 +93,30 @@ impl Pardiso {
         {
             Self { mtype }
         }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No PARDISO backend on aarch64-unknown-linux-gnu; the handle is
+            // inert and every `solve` returns Unsupported.
+            Self { mtype }
+        }
     }
 
     /// Factor and solve `A x = b` for the matrix in CSR form: `ia` has length
     /// `n + 1`, `ja` (column indices) and `a` (values) have length `nnz`.
     /// Returns the solution `x` (length `n`).
     pub fn solve(&mut self, ia: &[i32], ja: &[i32], a: &[f64], b: &[f64]) -> Result<Vec<f64>> {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No PARDISO backend on aarch64-unknown-linux-gnu (OpenBLAS covers
+            // only BLAS/LAPACK).
+            let _ = (ia, ja, a, b);
+            Err(Error::unsupported_linux_aarch64("PARDISO"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             self.solve_accelerate(ia, ja, a, b)
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             if ja.len() != a.len() {
                 return Err(Error::invalid("PARDISO: ja/a length mismatch"));
@@ -485,13 +520,18 @@ pub(crate) fn default_numeric_options() -> nuvai_mkl_sys::SparseNumericFactorOpt
 
 impl Drop for Pardiso {
     fn drop(&mut self) {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No PARDISO backend on aarch64-unknown-linux-gnu: the handle is
+            // inert, so there is nothing to release.
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             // The Accelerate backend keeps no persistent handle state: the
             // QR factorization is created and destroyed inside `solve_accelerate`,
             // so there is nothing to release here.
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             if self.analyzed {
                 // SAFETY: `self.pt`/`self.iparm` are initialized and

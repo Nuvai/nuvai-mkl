@@ -6,7 +6,8 @@
 //! / `rustc-link-search`), which reach every downstream link, but its
 //! `rustc-link-arg` would only ever apply to its own (nonexistent) binaries.
 //!
-//! On `aarch64-apple-darwin` there is no Intel MKL and no rpath to add: the
+//! On the aarch64 fallbacks (`aarch64-apple-darwin` and
+//! `aarch64-unknown-linux-gnu`) there is no Intel MKL and no rpath to add: the
 //! Accelerate framework lives in the SDK and OpenBLAS is linked by name, so
 //! `locate()` (which panics on aarch64) is never called.
 
@@ -15,13 +16,16 @@ fn main() {
         return;
     }
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    // aarch64 fallbacks: surface the selected backend to downstream crates.
+    // No rpath/--no-as-needed flags — those are only needed for the Intel MKL
+    // conda-forge shared objects.
+    #[cfg(target_arch = "aarch64")]
     {
         let backend = nuvai_mkl_src::backend();
         println!("cargo:metadata=BACKEND={}", nuvai_mkl_src::backend_tag(backend));
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
     {
         let info = nuvai_mkl_src::locate();
         // Only used for the Linux rpath directives; Windows has no rpath and

@@ -1,19 +1,22 @@
 //! Generates raw FFI bindings from the oneMKL headers that `nuvai-mkl-src`
 //! has acquired (and cached), via `nuvai_mkl_src::locate()`.
 //!
-//! On `aarch64-apple-darwin` Intel ships no oneMKL, so the bindgen pass is
-//! skipped entirely and the crate compiles the hand-written Accelerate FFI
-//! surface in `src/aarch64.rs` instead. The Intel x86_64 path is unchanged.
+//! On the aarch64 targets where Intel ships no oneMKL, the bindgen pass is
+//! skipped entirely and the crate compiles a hand-written FFI surface instead:
+//! `src/aarch64.rs` (Accelerate) on `aarch64-apple-darwin` and
+//! `src/linux_aarch64.rs` (OpenBLAS) on `aarch64-unknown-linux-gnu`. The Intel
+//! x86_64 path is unchanged.
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
 use std::env;
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
 use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=wrapper.h");
     println!("cargo:rerun-if-env-changed=MKLROOT");
     println!("cargo:rerun-if-changed=src/aarch64.rs");
+    println!("cargo:rerun-if-changed=src/linux_aarch64.rs");
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
@@ -27,7 +30,20 @@ fn main() {
         println!("cargo:metadata=BACKEND={}", nuvai_mkl_src::backend_tag(backend));
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        // No Intel oneMKL on aarch64 Linux either: the FFI surface is the
+        // hand-written OpenBLAS module (src/linux_aarch64.rs). Surface the
+        // selected backend to downstream crates.
+        let backend = nuvai_mkl_src::backend();
+        println!(
+            "[nuvai-mkl-sys] aarch64-unknown-linux-gnu: hand-written OpenBLAS FFI surface ({})",
+            nuvai_mkl_src::backend_tag(backend)
+        );
+        println!("cargo:metadata=BACKEND={}", nuvai_mkl_src::backend_tag(backend));
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
     {
         let info = nuvai_mkl_src::locate();
         eprintln!(

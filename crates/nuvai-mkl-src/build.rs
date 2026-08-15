@@ -54,13 +54,18 @@ fn emit_intel_mkl() {
     }
     #[cfg(target_os = "windows")]
     {
-        // conda win-64 mkl ships the import lib `mkl_rt.2.lib` + `mkl_rt.2.dll`.
-        println!("cargo:rustc-link-lib=dylib=mkl_rt.2");
+        // conda win-64 `mkl` ships 26 DLLs but zero import libs; `mkl-devel`
+        // ships `mkl_rt.lib` (which embeds `mkl_rt.3.dll`). Link that import
+        // lib. `user32` is a dependency of the MKL DLLs on Windows.
+        println!("cargo:rustc-link-lib=dylib=mkl_rt");
         println!("cargo:rustc-link-lib=dylib=user32");
     }
 
     // Informational metadata (also surfaced to downstream build scripts).
     println!("cargo:metadata=INCLUDE_DIR={}", info.include_dir.display());
     println!("cargo:metadata=LIB_DIR={}", info.lib_dir.display());
+    for dll_dir in &info.dll_dirs {
+        println!("cargo:metadata=DLL_DIR={}", dll_dir.display());
+    }
     println!("cargo:metadata=VERSION={}", MKL_VERSION);
 }

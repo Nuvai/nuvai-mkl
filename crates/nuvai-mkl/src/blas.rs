@@ -8,20 +8,30 @@
 use crate::error::Result;
 use crate::layout::{Layout, Transpose};
 
+/// Integer type the FFI CBLAS enums use on this target. bindgen maps the C
+/// `CBLAS_LAYOUT`/`CBLAS_TRANSPOSE` enums to `u32` on Unix (all values fit an
+/// `unsigned int`) and to `i32` on Windows (MSVC C enums default to `int`); the
+/// aarch64 hand-written FFI surface uses `u32`. Casting through this alias keeps
+/// the safe wrapper type-correct on every target (see PR #14 / task #7).
+#[cfg(target_os = "windows")]
+type CblasEnum = i32;
+#[cfg(not(target_os = "windows"))]
+type CblasEnum = u32;
+
 #[inline]
-fn cblas_layout(layout: Layout) -> u32 {
+fn cblas_layout(layout: Layout) -> CblasEnum {
     match layout {
-        Layout::RowMajor => nuvai_mkl_sys::CblasRowMajor,
-        Layout::ColMajor => nuvai_mkl_sys::CblasColMajor,
+        Layout::RowMajor => nuvai_mkl_sys::CblasRowMajor as CblasEnum,
+        Layout::ColMajor => nuvai_mkl_sys::CblasColMajor as CblasEnum,
     }
 }
 
 #[inline]
-fn cblas_trans(trans: Transpose) -> u32 {
+fn cblas_trans(trans: Transpose) -> CblasEnum {
     match trans {
-        Transpose::NoTrans => nuvai_mkl_sys::CblasNoTrans,
-        Transpose::Trans => nuvai_mkl_sys::CblasTrans,
-        Transpose::ConjTrans => nuvai_mkl_sys::CblasConjTrans,
+        Transpose::NoTrans => nuvai_mkl_sys::CblasNoTrans as CblasEnum,
+        Transpose::Trans => nuvai_mkl_sys::CblasTrans as CblasEnum,
+        Transpose::ConjTrans => nuvai_mkl_sys::CblasConjTrans as CblasEnum,
     }
 }
 

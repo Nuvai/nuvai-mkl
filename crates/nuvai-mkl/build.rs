@@ -24,6 +24,9 @@ fn main() {
     #[cfg(not(target_os = "macos"))]
     {
         let info = nuvai_mkl_src::locate();
+        // Only used for the Linux rpath directives; Windows has no rpath and
+        // instead surfaces the runtime DLL directory via `dll_dir()`.
+        #[cfg(not(target_os = "windows"))]
         let lib_dir = info.lib_dir.display();
 
         #[cfg(target_os = "linux")]
@@ -32,6 +35,21 @@ fn main() {
             // does not declare a DT_NEEDED on libm, so keep libm in the final link.
             println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-lm,--as-needed");
             println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // Windows has no rpath: the loader resolves `mkl_rt.3.dll` (and its
+            // runtime dependencies `libiomp5md.dll` / `tbb12.dll`) at process
+            // start from PATH (or the exe's directory). Surface the runtime DLL
+            // directories so CI can prepend them to PATH and local dev knows
+            // where to add them (or deploy the DLLs beside the executable).
+            for dll_dir in info.dll_dirs() {
+                println!(
+                    "cargo:warning=MKL runtime DLLs in {} — add to PATH (or copy beside the exe) before cargo run/test",
+                    dll_dir.display()
+                );
+                println!("cargo:metadata=DLL_DIR={}", dll_dir.display());
+            }
         }
     }
 }

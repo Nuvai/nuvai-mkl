@@ -13,6 +13,20 @@
 //! | VSL | [`vsl`] | random-number generation |
 //! | Sparse (PARDISO) | [`pardiso`] | parallel direct solver |
 //! | Sparse (DSS) | [`dss`] | lightweight direct solver |
+//!
+//! ## Backends
+//!
+//! On x86_64 Linux/Windows every domain runs on Intel oneMKL 2026.1.0. On
+//! `aarch64-apple-darwin` (Apple Silicon) and `aarch64-unknown-linux-gnu`
+//! (ARM64 Linux) Intel ships no oneMKL, so the backend is selected by `cfg`,
+//! never silently (ADR-0003):
+//!
+//! | Target | BLAS/LAPACK | FFT/VML/VSL/PARDISO/DSS |
+//! |---|---|---|
+//! | `aarch64-apple-darwin` | Accelerate vecLib (or OpenBLAS via the `openblas` feature) | Accelerate vDSP/vForce/Sparse + `rand` |
+//! | `aarch64-unknown-linux-gnu` | OpenBLAS (system `libopenblas-dev`) | [`ErrorKind::Unsupported`] |
+//!
+//! [`ErrorKind::Unsupported`]: error::ErrorKind::Unsupported
 
 #![allow(clippy::too_many_arguments)]
 

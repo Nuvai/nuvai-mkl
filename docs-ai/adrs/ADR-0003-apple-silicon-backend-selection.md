@@ -67,3 +67,36 @@ to an Apple Silicon-native backend behind the existing safe-wrapper API.
   silently degrading.
 - Follow-up (not blocking): a bindgen pass for Accelerate may replace the
   hand-written externs if a symbol beyond the current set is ever needed.
+
+## Extension (2026-08-15): aarch64-unknown-linux-gnu (task #9)
+
+Intel ships no oneMKL for ARM64 Linux either, so the same explicit-backend model
+extends to `aarch64-unknown-linux-gnu`:
+
+8. **OpenBLAS is the sole backend on aarch64-unknown-linux-gnu.** Unlike Apple
+   Silicon there is no OS-provided multi-domain framework: OpenBLAS covers only
+   BLAS/LAPACK. The backend is therefore selected unconditionally by
+   `cfg(all(target_os = "linux", target_arch = "aarch64"))` — the
+   `accelerate`/`openblas` Cargo features are no-ops there — and `nuvai-mkl-src`
+   emits `-lopenblas` (adding an `OPENBLAS_ROOT/lib` rpath when `OPENBLAS_ROOT`
+   is set, for conda/pip installs).
+
+9. **Unsupported domains return `ErrorKind::Unsupported`.** FFT (no DFTI/vDSP),
+   VML (no vForce), VSL (no `rand` backend is wired on Linux), PARDISO and DSS
+   (no Sparse/SparseSolve) have no OpenBLAS equivalent; every entry point returns
+   `ErrorKind::Unsupported` with an explicit message — never degrade silently
+   (decision 2).
+
+10. **The aarch64 LAPACK shim and CBLAS aliasing are shared.** OpenBLAS exposes
+    the same netlib Fortran `_` entry points (`sgesv_`/`dgesv_`/`sgetrf_`/
+    `dgetrf_`) as Accelerate, so the decision-5 RowMajor transpose shim is reused
+    unchanged, and the decision-4 CBLAS symbol aliasing applies verbatim.
+
+### Consequences (extension)
+
+- `nuvai-mkl` on linux-aarch64 covers BLAS/LAPACK numerically against OpenBLAS
+  and returns `ErrorKind::Unsupported` for FFT/VML/VSL/PARDISO/DSS.
+- The hand-written `nuvai-mkl-sys` surface for this target (`linux_aarch64.rs`)
+  mirrors the Apple Silicon one but is limited to CBLAS + Fortran LAPACK `_`.
+- A native ARM64 CI job (`ubuntu-24.04-arm` + `libopenblas-dev`) exercises the
+  numerical and Unsupported paths on every PR/push.

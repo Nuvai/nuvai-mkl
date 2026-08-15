@@ -1,6 +1,6 @@
 # nuvai-mkl
 
-A modern Rust wrapper over **Intel oneMKL 2026.1.0** on x86_64, and over
+A modern Rust wrapper over **Intel oneMKL 2026.1.0** on x86_64 Linux/Windows, and over
 Apple Silicon-native replacements (Accelerate / `rand`) on `aarch64-apple-darwin`.
 
 `nuvai-mkl` is the successor to the abandoned [`intel-mkl-src`](https://crates.io/crates/intel-mkl-src)
@@ -29,11 +29,11 @@ crates/
 
 ## Domain coverage
 
-`nuvai-mkl` targets the full oneMKL surface. On x86_64 every domain runs on
+`nuvai-mkl` targets the full oneMKL surface. On x86_64 Linux/Windows every domain runs on
 Intel oneMKL; on Apple Silicon each domain maps to a native backend behind the
 same typed API (ADR-0003).
 
-| MKL domain | x86_64 (Intel MKL) | aarch64-apple-darwin backend |
+| MKL domain | x86_64 Linux/Windows (Intel MKL) | aarch64-apple-darwin backend |
 |---|---|---|
 | **BLAS** | `cblas_*` / `?gemm`, `?gemv`, `?dot`, `?axpy` | Accelerate **vecLib** (`cblas_*`, symbol-aliased) or OpenBLAS |
 | **LAPACK** | `LAPACKE_*` (`?gesv`, `?getrf`, `?syev`, …) | Accelerate Fortran `_` entry points (`?gesv_`, …) + RowMajor shim, or OpenBLAS |
@@ -46,7 +46,7 @@ same typed API (ADR-0003).
 
 Selection is **explicit, never silent** (ADR-0003 decision 2):
 
-- On `x86_64` targets the backend is always Intel oneMKL; no feature changes that.
+- On `x86_64` Linux/Windows targets the backend is always Intel oneMKL; no feature changes that.
 - On `aarch64-apple-darwin` the non-MKL path is mandatory (`cfg(target_arch = "aarch64")`); the *choice* of backend is a Cargo feature on `nuvai-mkl`:
 
 | Feature | Default? | Effect on aarch64 |
@@ -64,7 +64,7 @@ Selection is **explicit, never silent** (ADR-0003 decision 2):
 |---|---|---|
 | `x86_64-unknown-linux-gnu` | Intel oneMKL (download conda-forge or system oneAPI) | ✅ |
 | `x86_64-pc-windows-msvc` | Intel oneMKL (download conda-forge or system oneAPI) | ✅ |
-| `x86_64-apple-darwin` | Intel oneMKL (system oneAPI) | ✅ |
+| `x86_64-apple-darwin` | — | ❌ unsupported (Intel ended macOS oneMKL after 2023.2.0) |
 | `aarch64-apple-darwin` (Apple Silicon) | Accelerate + `rand` (`accelerate` feature, default) | ✅ |
 | `aarch64-unknown-linux-gnu` | `openblas` feature (planned) | 🚧 planned |
 

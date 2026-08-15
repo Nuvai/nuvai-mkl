@@ -5,9 +5,9 @@
 //! skipped entirely and the crate compiles the hand-written Accelerate FFI
 //! surface in `src/aarch64.rs` instead. The Intel x86_64 path is unchanged.
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_os = "macos"))]
 use std::env;
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_os = "macos"))]
 use std::path::PathBuf;
 
 fn main() {
@@ -27,7 +27,7 @@ fn main() {
         println!("cargo:metadata=BACKEND={}", nuvai_mkl_src::backend_tag(backend));
     }
 
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(target_os = "macos"))]
     {
         let info = nuvai_mkl_src::locate();
         eprintln!(

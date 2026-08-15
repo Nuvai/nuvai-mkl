@@ -28,6 +28,6 @@ nuvai-mkl-src = { workspace = true }
 nuvai-mkl-src = { workspace = true }
 
 # bindgen is only needed where oneMKL headers exist; on aarch64-apple-darwin
-# the FFI surface is hand-written and bindgen would be a needless build cost.
-[target.'cfg(not(all(target_os = "macos", target_arch = "aarch64")))'.build-dependencies]
+# the FFI surface is hand-written and x86_64-apple-darwin is unsupported.
+[target.'cfg(not(target_os = "macos"))'.build-dependencies]
 bindgen = "0.71"

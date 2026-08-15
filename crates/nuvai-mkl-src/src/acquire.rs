@@ -108,15 +108,12 @@ fn download_mkl() -> MklInfo {
     let pkg_dir = cache_dir().join(format!("mkl-{MKL_VERSION}"));
 
     let ((mkl_file, mkl_sha), (include_file, include_sha)) =
-        match (cfg!(target_os = "linux"), cfg!(target_os = "windows"), cfg!(target_os = "macos")) {
-            (true, _, _) => ((LINUX_MKL, LINUX_MKL_SHA256), (LINUX_INCLUDE, LINUX_INCLUDE_SHA256)),
-            (_, true, _) => ((WIN_MKL, WIN_MKL_SHA256), (WIN_INCLUDE, WIN_INCLUDE_SHA256)),
-            (_, _, true) => panic!(
-                "macOS NuGet acquisition is not yet wired; install oneAPI and set MKLROOT."
-            ),
+        match (cfg!(target_os = "linux"), cfg!(target_os = "windows")) {
+            (true, _) => ((LINUX_MKL, LINUX_MKL_SHA256), (LINUX_INCLUDE, LINUX_INCLUDE_SHA256)),
+            (_, true) => ((WIN_MKL, WIN_MKL_SHA256), (WIN_INCLUDE, WIN_INCLUDE_SHA256)),
             _ => panic!(
                 "unsupported target for Intel oneMKL {MKL_VERSION}: MKL is x86_64 \
-                 Linux/Windows/macOS only. On aarch64 use the `accelerate`/`openblas` fallback."
+                 Linux/Windows only. On aarch64 use the `accelerate`/`openblas` fallback."
             ),
         };
 

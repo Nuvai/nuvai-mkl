@@ -38,7 +38,7 @@ fn main() {
     }
 }
 
-/// Emit the Intel oneMKL linker directives (x86_64 Linux/Windows/macOS).
+/// Emit the Intel oneMKL linker directives (x86_64 Linux/Windows).
 fn emit_intel_mkl() {
     let info = locate();
 
@@ -50,11 +50,6 @@ fn emit_intel_mkl() {
         println!("cargo:rustc-link-lib=dylib=dl");
         println!("cargo:rustc-link-lib=dylib=pthread");
         println!("cargo:rustc-link-lib=dylib=m");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", info.lib_dir.display());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        println!("cargo:rustc-link-lib=dylib=mkl_rt");
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", info.lib_dir.display());
     }
     #[cfg(target_os = "windows")]

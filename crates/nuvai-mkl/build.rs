@@ -21,7 +21,7 @@ fn main() {
         println!("cargo:metadata=BACKEND={}", nuvai_mkl_src::backend_tag(backend));
     }
 
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(target_os = "macos"))]
     {
         let info = nuvai_mkl_src::locate();
         let lib_dir = info.lib_dir.display();
@@ -31,10 +31,6 @@ fn main() {
             // conda-forge's `libmkl_core.so.3` references `log`/`exp`/`sin`/… but
             // does not declare a DT_NEEDED on libm, so keep libm in the final link.
             println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-lm,--as-needed");
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
-        }
-        #[cfg(target_os = "macos")]
-        {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
         }
     }

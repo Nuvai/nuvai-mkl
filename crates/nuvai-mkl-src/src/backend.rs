@@ -1,6 +1,6 @@
 // Backend selection for `nuvai-mkl-src`.
 //
-// This crate links Intel oneMKL on x86_64 (Linux/Windows/macOS) and falls back
+// This crate links Intel oneMKL on x86_64 Linux/Windows and falls back
 // to Accelerate or OpenBLAS on `aarch64-apple-darwin`, where Intel ships no
 // MKL. The selection is *explicit* — never silent:
 //
@@ -27,10 +27,21 @@ compile_error!(
      enable `accelerate` (default) or `openblas`"
 );
 
+// `x86_64-apple-darwin` is unsupported: Intel ended oneMKL for macOS after the
+// 2023.2.0 release (well short of the 2026.1.0 this crate links), so no
+// supported acquisition path exists. Reject at compile time rather than
+// half-linking against a stale manual oneAPI install.
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+compile_error!(
+    "nuvai-mkl-src: x86_64-apple-darwin is not supported — Intel ships no 2026.x \
+     oneMKL for macOS (last macOS build: 2023.2.0). Use aarch64-apple-darwin \
+     (Apple Silicon, Accelerate/OpenBLAS) or an x86_64 Linux/Windows target."
+);
+
 /// The link backend selected for the current build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
-    /// Intel oneMKL (`mkl_rt`) — the x86_64 Linux/Windows/macOS path.
+    /// Intel oneMKL (`mkl_rt`) — the x86_64 Linux/Windows path.
     IntelMkl,
     /// Apple's Accelerate framework (`-framework Accelerate`) — the default
     /// `aarch64-apple-darwin` fallback.

@@ -15,6 +15,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/acquire.rs");
     println!("cargo:rerun-if-changed=src/backend.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENBLAS");
+    println!("cargo:rerun-if-env-changed=OPENBLAS_ROOT");
 
     // docs.rs has no network and no MKL; skip linking there.
     if std::env::var("DOCS_RS").is_ok() {
@@ -28,12 +29,30 @@ fn main() {
             println!("cargo:metadata=BACKEND=accelerate");
         }
         Backend::OpenBlas => {
-            // OpenBLAS replaces only BLAS/LAPACK (vecLib); FFT (vDSP), VML
-            // (vForce) and the sparse solvers (Sparse/SparseSolve) still call
-            // Accelerate, so both must be linked on this path.
             println!("cargo:rustc-link-lib=dylib=openblas");
-            println!("cargo:rustc-link-lib=framework=Accelerate");
             println!("cargo:metadata=BACKEND=openblas");
+            // macOS: OpenBLAS replaces only BLAS/LAPACK (vecLib); FFT (vDSP),
+            // VML (vForce) and the sparse solvers (Sparse/SparseSolve) still
+            // call Accelerate, so both must be linked on this path.
+            #[cfg(target_os = "macos")]
+            {
+                println!("cargo:rustc-link-lib=framework=Accelerate");
+            }
+            // Linux-aarch64: OpenBLAS is the only backend and covers only
+            // BLAS/LAPACK, so there is no Accelerate to link. A distro
+            // `libopenblas-dev` lives in the system search path and needs no
+            // rpath; an explicit OPENBLAS_ROOT (e.g. a conda/pip install)
+            // contributes its `lib` dir to the search path and rpath.
+            #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+            {
+                if let Ok(root) = std::env::var("OPENBLAS_ROOT") {
+                    if !root.trim().is_empty() {
+                        let lib = format!("{root}/lib");
+                        println!("cargo:rustc-link-search=native={lib}");
+                        println!("cargo:rustc-link-arg=-Wl,-rpath,{lib}");
+                    }
+                }
+            }
         }
     }
 }

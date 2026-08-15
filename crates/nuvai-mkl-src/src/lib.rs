@@ -2,7 +2,7 @@
 //!
 //! Acquires and links a numerical backend into your crate.
 //!
-//! On x86_64 this crate locates Intel oneMKL **2026.1.0** — the system oneAPI
+//! On x86_64 Linux/Windows this crate locates Intel oneMKL **2026.1.0** — the system oneAPI
 //! install via `MKLROOT`, or a conda-forge download (Linux, Windows) into a
 //! shared cache — and emits the linker directives.
 //!
@@ -21,7 +21,7 @@
 //! |---|---|
 //! | `x86_64-unknown-linux-gnu` | Intel oneMKL — download (conda-forge) or system |
 //! | `x86_64-pc-windows-msvc` | Intel oneMKL — conda-forge `mkl` + `mkl-include` + `mkl-devel` + `llvm-openmp` + `tbb` (links `mkl_rt` → `mkl_rt.3.dll`; runtime DLLs `libiomp5md.dll`/`tbb12.dll` on `PATH`), or system oneAPI (`MKLROOT`; runtime DLL dir on `PATH`) |
-//! | `x86_64-apple-darwin` | Intel oneMKL — system only (NuGet wiring pending) |
+//! | `x86_64-apple-darwin` | unsupported (Intel ended macOS oneMKL after 2023.2.0) |
 //! | `aarch64-apple-darwin` (Apple Silicon) | Accelerate (default) or OpenBLAS |
 //! | `aarch64-unknown-linux-gnu` | not yet wired (plan: OpenBLAS) |
 

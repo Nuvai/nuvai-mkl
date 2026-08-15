@@ -32,5 +32,5 @@ mod aarch64;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use aarch64::*;
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_os = "macos"))]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));

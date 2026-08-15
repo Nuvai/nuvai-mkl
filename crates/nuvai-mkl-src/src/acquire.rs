@@ -170,8 +170,8 @@ fn download_mkl() -> MklInfo {
         (&str, &str),
         Option<(&str, &str)>,
         &[(&str, &str)],
-    ) = match (cfg!(target_os = "linux"), cfg!(target_os = "windows"), cfg!(target_os = "macos")) {
-        (true, _, _) => (
+    ) = match (cfg!(target_os = "linux"), cfg!(target_os = "windows")) {
+        (true, _) => (
             (LINUX_MKL, LINUX_MKL_SHA256),
             (LINUX_INCLUDE, LINUX_INCLUDE_SHA256),
             None,
@@ -182,18 +182,15 @@ fn download_mkl() -> MklInfo {
         // OpenMP runtime (`libiomp5md.dll` from `llvm-openmp`) and the TBB
         // threading layer (`tbb12.dll` from `tbb`), which `mkl` declares as
         // conda dependencies but which do not ship inside `mkl` itself.
-        (_, true, _) => (
+        (_, true) => (
             (WIN_MKL, WIN_MKL_SHA256),
             (WIN_INCLUDE, WIN_INCLUDE_SHA256),
             Some((WIN_DEVEL, WIN_DEVEL_SHA256)),
             &[(WIN_LLVM_OPENMP, WIN_LLVM_OPENMP_SHA256), (WIN_TBB, WIN_TBB_SHA256)][..],
         ),
-        (_, _, true) => panic!(
-            "macOS NuGet acquisition is not yet wired; install oneAPI and set MKLROOT."
-        ),
         _ => panic!(
             "unsupported target for Intel oneMKL {MKL_VERSION}: MKL is x86_64 \
-             Linux/Windows/macOS only. On aarch64 use the `accelerate`/`openblas` fallback."
+             Linux/Windows only. On aarch64 use the `accelerate`/`openblas` fallback."
         ),
     };
 

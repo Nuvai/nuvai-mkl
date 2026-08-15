@@ -68,6 +68,38 @@ jobs:
       - name: cargo test (openblas)
         run: cargo test --target aarch64-apple-darwin --workspace --no-default-features --features openblas
 
+  # ARM64 Linux: OpenBLAS is the sole backend (BLAS/LAPACK only; FFT/VML/VSL/
+  # sparse/PARDISO/DSS return ErrorKind::Unsupported). The runner is ARM64 so
+  # aarch64-unknown-linux-gnu is the native host target. bindgen is gated off on
+  # aarch64, so no libclang is needed here.
+  aarch64-linux:
+    name: aarch64-unknown-linux-gnu (OpenBLAS)
+    runs-on: ubuntu-24.04-arm # public ARM64 runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+
+      - name: Install nightly 1.99 toolchain (native aarch64-unknown-linux-gnu)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: aarch64-unknown-linux-gnu
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: target
+
+      - name: cargo check
+        run: cargo check --target aarch64-unknown-linux-gnu --workspace
+
+      - name: cargo test
+        run: cargo test --target aarch64-unknown-linux-gnu --workspace
+
+      - name: cargo clippy
+        run: cargo clippy --target aarch64-unknown-linux-gnu --workspace --all-targets -- -D warnings
+
   # x86_64 Linux: Intel oneMKL acquired by nuvai-mkl-src at build time
   # (conda-forge download into ~/.cache/nuvai-mkl). libclang is required by the
   # nuvai-mkl-sys bindgen pass.

@@ -112,7 +112,7 @@ pub fn locate() -> MklInfo {
     {
         panic!(
             "Intel oneMKL is unavailable on aarch64 (Intel ships x86_64 builds only); \
-             select the Accelerate (macOS) or OpenBLAS fallback via \
+             select the Accelerate (macOS) or OpenBLAS (Linux/macOS) fallback via \
              nuvai_mkl_src::backend() instead of nuvai_mkl_src::locate()"
         );
     }

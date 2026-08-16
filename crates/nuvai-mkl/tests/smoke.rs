@@ -1,6 +1,9 @@
 //! End-to-end smoke tests exercising all six oneMKL domains against the real
 //! MKL 2026.1.0 acquired by `nuvai-mkl-src`.
 
+// The FFT round-trip tests (and their complex types) do not run on
+// aarch64-unknown-linux-gnu, where FFT returns Unsupported.
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 use nuvai_mkl::fft::{MKL_Complex16, MKL_Complex8};
 use nuvai_mkl::layout::{Layout, Transpose};
 use nuvai_mkl::{blas, dss, fft, lapack, pardiso, vml, vsl};
@@ -96,6 +99,7 @@ fn lapack_dgesv_rowmajor_2x2() {
     assert_close64(&b, &[2.0, 8.0 / 3.0], 1e-12);
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn fft_roundtrip_c32() {
     let plan = fft::FftPlan::new_c32(4).unwrap();
@@ -122,6 +126,7 @@ fn fft_roundtrip_c32() {
     }
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn fft_roundtrip_c64() {
     let plan = fft::FftPlan::new_c64(4).unwrap();
@@ -147,6 +152,7 @@ fn fft_roundtrip_c64() {
     }
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn fft_roundtrip_c32_non_pow2() {
     // 24 = 3·2^3 is not a power of two, so this exercises the non-power-of-two
@@ -174,6 +180,7 @@ fn fft_roundtrip_c32_non_pow2() {
 /// Exercise every VML function (all 11) in single precision against known
 /// values. The f32/f64 variants run through both backends (MKL VML on Intel,
 /// Accelerate vForce on aarch64).
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn vml_full_surface_f32() {
     let e = std::f32::consts::E;
@@ -217,6 +224,7 @@ fn vml_full_surface_f32() {
 }
 
 /// Every VML function in double precision (vForce `D` variants on aarch64).
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn vml_full_surface_f64() {
     let e = std::f64::consts::E;
@@ -259,6 +267,7 @@ fn vml_full_surface_f64() {
     assert_close64(&dst, &[0.0, pi4], 1e-12);
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn vsl_uniform_gaussian() {
     let stream = vsl::Stream::new(12345).unwrap();
@@ -286,6 +295,7 @@ fn vsl_uniform_gaussian() {
     assert!((gmean64 - 0.0).abs() <= 0.01, "gaussian64 mean = {gmean64}");
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn pardiso_solve_3x3() {
     // A = [[2,1,0],[1,3,1],[0,1,2]] (nonsymmetric, full CSR, 1-based).
@@ -298,6 +308,7 @@ fn pardiso_solve_3x3() {
     assert_close64(&x, &[1.0, 2.0, 3.0], 1e-9);
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn dss_solve_2x2() {
     // A = [[4,1],[1,3]] symmetric positive-definite, upper triangle, 0-based.
@@ -309,6 +320,7 @@ fn dss_solve_2x2() {
     assert_close64(&x, &[1.0, 1.0], 1e-9);
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn vsl_uniform_rejects_empty_range() {
     let stream = vsl::Stream::new(7).unwrap();
@@ -385,4 +397,71 @@ fn pardiso_rejects_bad_csr_indices_on_aarch64() {
     let b = [4.0f64, 10.0];
     let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
     assert!(solver.solve(&ia, &ja, &a, &b).is_err());
+}
+
+/// On `aarch64-unknown-linux-gnu` OpenBLAS covers only BLAS/LAPACK, so every
+/// other domain must return `ErrorKind::Unsupported` — never a silent no-op or
+/// a panic (ADR-0003, decision 2).
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+mod linux_aarch64_unsupported {
+    use super::*;
+    use nuvai_mkl::error::ErrorKind;
+
+    #[test]
+    fn fft_plan_unsupported() {
+        // `.err().unwrap()` rather than `.unwrap_err()`: the Ok type
+        // (`FftPlan`) does not implement `Debug`.
+        assert_eq!(
+            fft::FftPlan::new_c32(4).err().unwrap().kind(),
+            ErrorKind::Unsupported
+        );
+        assert_eq!(
+            fft::FftPlan::new_c64(4).err().unwrap().kind(),
+            ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn vml_unsupported() {
+        let mut dst = [0.0f32; 2];
+        assert_eq!(
+            vml::exp(&[0.0, 1.0], &mut dst).err().unwrap().kind(),
+            ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn vsl_stream_unsupported() {
+        assert_eq!(
+            vsl::Stream::new(1).err().unwrap().kind(),
+            ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn pardiso_solve_unsupported() {
+        let ia = [1i32, 3, 5];
+        let ja = [1i32, 2, 1, 2];
+        let a = [2.0f64, 1.0, 1.0, 3.0];
+        let b = [4.0f64, 10.0];
+        let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+        assert_eq!(
+            solver.solve(&ia, &ja, &a, &b).err().unwrap().kind(),
+            ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn dss_factor_unsupported() {
+        let row_index = [0i32, 2, 3];
+        let columns = [0i32, 1, 1];
+        let values = [4.0f64, 1.0, 3.0];
+        assert_eq!(
+            dss::Dss::factor_symmetric(&row_index, &columns, &values)
+                .err()
+                .unwrap()
+                .kind(),
+            ErrorKind::Unsupported
+        );
+    }
 }

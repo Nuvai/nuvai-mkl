@@ -1,14 +1,16 @@
 # nuvai-mkl
 
-A modern Rust wrapper over **Intel oneMKL 2026.1.0** on x86_64 Linux/Windows, and over
-Apple Silicon-native replacements (Accelerate / `rand`) on `aarch64-apple-darwin`.
+A modern Rust wrapper over **Intel oneMKL 2026.1.0** on x86_64 Linux/Windows, over
+Apple Silicon-native replacements (Accelerate / `rand`) on `aarch64-apple-darwin`,
+and over **OpenBLAS** on `aarch64-unknown-linux-gnu`.
 
 `nuvai-mkl` is the successor to the abandoned [`intel-mkl-src`](https://crates.io/crates/intel-mkl-src)
 (frozen at MKL 2020.1, last released 2022). It acquires and links the current
 oneMKL release (2026.1.0) and exposes it through a safe, idiomatic API. Where
-Intel ships no oneMKL build (Apple Silicon), the same typed API is backed by
-Accelerate's vecLib/vDSP/vForce/Sparse frameworks and the `rand` stack, selected
-by `cfg` (never silently).
+Intel ships no oneMKL build (Apple Silicon, ARM64 Linux), the same typed API is
+backed by Accelerate's vecLib/vDSP/vForce/Sparse frameworks and the `rand` stack
+on macOS, or by OpenBLAS (BLAS/LAPACK only) on Linux, selected by `cfg` (never
+silently).
 
 ## Architecture
 
@@ -16,8 +18,8 @@ A three-crate Cargo workspace, mirroring the proven `-src`/`-sys`/wrapper split:
 
 | Crate | Role |
 |---|---|
-| `nuvai-mkl-src` | Acquire + link. Build script detects `MKLROOT`/oneAPI, or downloads 2026.1.0 from conda-forge (Linux/Windows; Windows also pulls `mkl-devel` for the `mkl_rt.lib` import lib and the `llvm-openmp`/`tbb` runtime DLLs), then emits linker directives. `links = "mkl"`. On `aarch64-apple-darwin` it emits Accelerate (`-framework Accelerate`) or OpenBLAS (`-lopenblas`) directives instead — see [Backend selection](#backend-selection). |
-| `nuvai-mkl-sys` | Raw FFI bindings to the full C interface, generated with `bindgen`. On `aarch64-apple-darwin` a hand-written `extern "C"` surface replaces the bindgen pass (Accelerate cblas, Fortran LAPACK `_`, vDSP DFT, vForce, Sparse/SparseSolve). |
+| `nuvai-mkl-src` | Acquire + link. Build script detects `MKLROOT`/oneAPI, or downloads 2026.1.0 from conda-forge (Linux/Windows; Windows also pulls `mkl-devel` for the `mkl_rt.lib` import lib and the `llvm-openmp`/`tbb` runtime DLLs), then emits linker directives. `links = "mkl"`. On `aarch64-apple-darwin` it emits Accelerate (`-framework Accelerate`) or OpenBLAS (`-lopenblas`) directives, and on `aarch64-unknown-linux-gnu` it emits OpenBLAS — see [Backend selection](#backend-selection). |
+| `nuvai-mkl-sys` | Raw FFI bindings to the full C interface, generated with `bindgen`. On `aarch64-apple-darwin` a hand-written `extern "C"` surface replaces the bindgen pass (Accelerate cblas, Fortran LAPACK `_`, vDSP DFT, vForce, Sparse/SparseSolve); on `aarch64-unknown-linux-gnu` a hand-written surface covers OpenBLAS (netlib CBLAS + Fortran LAPACK `_`). |
 | `nuvai-mkl` | Safe, typed wrapper over all MKL domains. |
 
 ```
@@ -30,26 +32,28 @@ crates/
 ## Domain coverage
 
 `nuvai-mkl` targets the full oneMKL surface. On x86_64 Linux/Windows every domain runs on
-Intel oneMKL; on Apple Silicon each domain maps to a native backend behind the
-same typed API (ADR-0003).
+Intel oneMKL; on the ARM64 targets where Intel ships no oneMKL each domain maps to a
+native backend behind the same typed API (ADR-0003) — or returns
+`ErrorKind::Unsupported` where no backend exists.
 
-| MKL domain | x86_64 Linux/Windows (Intel MKL) | aarch64-apple-darwin backend |
-|---|---|---|
-| **BLAS** | `cblas_*` / `?gemm`, `?gemv`, `?dot`, `?axpy` | Accelerate **vecLib** (`cblas_*`, symbol-aliased) or OpenBLAS |
-| **LAPACK** | `LAPACKE_*` (`?gesv`, `?getrf`, `?syev`, …) | Accelerate Fortran `_` entry points (`?gesv_`, …) + RowMajor shim, or OpenBLAS |
-| **FFT (DFTI)** | `DftiCreateDescriptor*` / `DftiCompute*` | Accelerate **vDSP** DFT (forward/inverse setups, `1/n` applied on inverse) |
-| **VML** (vector math) | `vsExp`, `vsLn`, `vsSin`, `vsSqrt`, … | Accelerate **vForce** (`vvexpf`, `vvlogf`, …, `(dst, src, n)` order) |
-| **Sparse direct solvers (PARDISO/DSS)** | `pardisoinit`/`pardiso`, `dss_*` | Accelerate **Sparse/SparseSolve** (CSR→CSC transpose; QR for PARDISO, Cholesky for DSS) |
-| **VSL** (RNG) | `vslNewStream` / `vsRngUniform` / `vsRngGaussian` | `rand` / `rand_chacha` / `rand_distr` (ChaCha20; statistically valid, not sequence-identical) |
+| MKL domain | x86_64 Linux/Windows (Intel MKL) | aarch64-apple-darwin backend | aarch64-unknown-linux-gnu backend |
+|---|---|---|---|
+| **BLAS** | `cblas_*` / `?gemm`, `?gemv`, `?dot`, `?axpy` | Accelerate **vecLib** (`cblas_*`, symbol-aliased) or OpenBLAS | OpenBLAS (`cblas_*`, symbol-aliased) |
+| **LAPACK** | `LAPACKE_*` (`?gesv`, `?getrf`, `?syev`, …) | Accelerate Fortran `_` entry points (`?gesv_`, …) + RowMajor shim, or OpenBLAS | OpenBLAS Fortran `_` entry points + RowMajor shim |
+| **FFT (DFTI)** | `DftiCreateDescriptor*` / `DftiCompute*` | Accelerate **vDSP** DFT (forward/inverse setups, `1/n` applied on inverse) | `ErrorKind::Unsupported` |
+| **VML** (vector math) | `vsExp`, `vsLn`, `vsSin`, `vsSqrt`, … | Accelerate **vForce** (`vvexpf`, `vvlogf`, …, `(dst, src, n)` order) | `ErrorKind::Unsupported` |
+| **Sparse direct solvers (PARDISO/DSS)** | `pardisoinit`/`pardiso`, `dss_*` | Accelerate **Sparse/SparseSolve** (CSR→CSC transpose; QR for PARDISO, Cholesky for DSS) | `ErrorKind::Unsupported` |
+| **VSL** (RNG) | `vslNewStream` / `vsRngUniform` / `vsRngGaussian` | `rand` / `rand_chacha` / `rand_distr` (ChaCha20; statistically valid, not sequence-identical) | `ErrorKind::Unsupported` |
 
 ## Backend selection
 
 Selection is **explicit, never silent** (ADR-0003 decision 2):
 
 - On `x86_64` Linux/Windows targets the backend is always Intel oneMKL; no feature changes that.
+- On `aarch64-unknown-linux-gnu` the backend is always **OpenBLAS** (`cfg(target_arch = "aarch64")` + `target_os = "linux"`); the `accelerate`/`openblas` features are no-ops there because there is no second backend to choose from.
 - On `aarch64-apple-darwin` the non-MKL path is mandatory (`cfg(target_arch = "aarch64")`); the *choice* of backend is a Cargo feature on `nuvai-mkl`:
 
-| Feature | Default? | Effect on aarch64 |
+| Feature | Default? | Effect on aarch64-apple-darwin |
 |---|---|---|
 | `accelerate` | ✅ | Use Accelerate for every domain (BLAS/LAPACK via vecLib, FFT via vDSP, VML via vForce, sparse via Sparse/SparseSolve). |
 | `openblas` | — | Use OpenBLAS for BLAS/LAPACK instead of vecLib (opt-in; FFT/VML/sparse/VSL still use Accelerate/`rand`). |
@@ -66,7 +70,7 @@ Selection is **explicit, never silent** (ADR-0003 decision 2):
 | `x86_64-pc-windows-msvc` | Intel oneMKL — conda-forge `mkl` + `mkl-include` + `mkl-devel` + `llvm-openmp` + `tbb` (links `mkl_rt` → `mkl_rt.3.dll`; runtime DLLs `libiomp5md.dll`/`tbb12.dll` on `PATH`), or system oneAPI (`MKLROOT`) | ✅ |
 | `x86_64-apple-darwin` | — | ❌ unsupported (Intel ended macOS oneMKL after 2023.2.0) |
 | `aarch64-apple-darwin` (Apple Silicon) | Accelerate + `rand` (`accelerate` feature, default) | ✅ |
-| `aarch64-unknown-linux-gnu` | `openblas` feature (planned) | 🚧 planned |
+| `aarch64-unknown-linux-gnu` | OpenBLAS — system `libopenblas-dev` (BLAS/LAPACK only; FFT/VML/VSL/sparse return `ErrorKind::Unsupported`) | ✅ |
 
 On `x86_64-pc-windows-msvc` the Windows loader resolves the MKL runtime
 (`mkl_rt.3.dll`, plus the OpenMP `libiomp5md.dll` and TBB `tbb12.dll` its
@@ -82,7 +86,8 @@ not exist there).
 
 - Rust (built against **1.99 nightly**, edition 2024).
 - First build downloads ~140 MB of MKL into `~/.cache/nuvai-mkl/` (cached thereafter; on Windows the cache falls back to `%USERPROFILE%\.cache\nuvai-mkl` since `HOME` is often unset, and the acquisition also fetches `mkl-devel`, `llvm-openmp` and `tbb`).
-- `libclang` + `bindgen` for regenerating FFI bindings (LLVM on Windows, `libclang-dev` on Linux).
+- `libclang` + `bindgen` for regenerating FFI bindings on Intel targets (LLVM on Windows, `libclang-dev` on Linux). The ARM64 aarch64 targets use a hand-written FFI surface and need no libclang.
+- On `aarch64-unknown-linux-gnu`, OpenBLAS is the sole backend: install `libopenblas-dev` (system default search path), or point `OPENBLAS_ROOT` at a conda/pip install — `nuvai-mkl-src` adds its `lib` dir to the propagated link-search path, and the workspace's own test/example binaries get the matching runtime rpath via `nuvai-mkl`'s build script (`cargo:rustc-link-arg` only applies to the emitting crate's own targets, so downstream crates linking a non-system OpenBLAS must set their own rpath).
 
 ## Usage
 

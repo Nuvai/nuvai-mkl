@@ -28,3 +28,5 @@ Cargo.lock
 .nuvai/reviews/
 .nuvai/reports
 .nuvai/audits
+.nuvai/build-remote.env.local
+.claude/build-remote.env.local

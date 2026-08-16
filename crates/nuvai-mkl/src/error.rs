@@ -52,6 +52,16 @@ impl Error {
         }
     }
 
+    /// An operation unavailable on `aarch64-unknown-linux-gnu`, where OpenBLAS
+    /// covers only BLAS/LAPACK (no FFT/VML/VSL/sparse backend exists).
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "gnu"))]
+    pub(crate) fn unsupported_linux_aarch64(domain: &str) -> Self {
+        Self::unsupported(format!(
+            "{domain} is not supported on aarch64-unknown-linux-gnu \
+             (OpenBLAS covers only BLAS/LAPACK)"
+        ))
+    }
+
     /// The error category.
     pub fn kind(&self) -> ErrorKind {
         self.kind

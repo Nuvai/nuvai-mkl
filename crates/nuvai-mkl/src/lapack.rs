@@ -1,11 +1,11 @@
 //! LAPACK dense solvers and factorizations.
 //!
-//! On Intel targets this uses the LAPACKE C interface. On Apple Silicon
-//! (`aarch64-apple-darwin`) Accelerate exposes only the Fortran `_` entry
-//! points (`sgesv_`, `dgesv_`, `sgetrf_`, `dgetrf_`) — no LAPACKE — so the
-//! same public functions dispatch to those and translate `Layout::RowMajor`
-//! by transposing into column-major buffers, exactly as LAPACKE does
-//! internally (see ADR-0003, decision 5).
+//! On Intel targets this uses the LAPACKE C interface. On the aarch64 fallback
+//! targets (Apple Silicon Accelerate and `aarch64-unknown-linux-gnu` OpenBLAS)
+//! only the Fortran `_` entry points exist (`sgesv_`, `dgesv_`, `sgetrf_`,
+//! `dgetrf_`) — no LAPACKE — so the same public functions dispatch to those
+//! and translate `Layout::RowMajor` by transposing into column-major buffers,
+//! exactly as LAPACKE does internally (see ADR-0003, decision 5).
 
 use crate::error::{Error, Result};
 use crate::layout::Layout;
@@ -14,7 +14,7 @@ use crate::layout::Layout;
 /// (`LAPACK_ROW_MAJOR` = 101, `LAPACK_COL_MAJOR` = 102). Only defined where
 /// LAPACKE exists (Intel oneMKL); the aarch64 backend uses the Fortran `_`
 /// entry points directly.
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 fn lapacke_layout(layout: Layout) -> i32 {
     match layout {
@@ -125,7 +125,7 @@ pub fn sgesv(
     ldb: i32,
 ) -> Result<()> {
     check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?;
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(target_arch = "aarch64"))]
     {
         // SAFETY: `a`, `ipiv` and `b` cover at least the `lda·n`, `n` and
         // `ldb·nrhs` elements (layout-adjusted) that `LAPACKE_sgesv` reads and
@@ -148,7 +148,7 @@ pub fn sgesv(
         }
         Ok(())
     }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(target_arch = "aarch64")]
     {
         aarch64::sgesv(layout, n, nrhs, a, lda, ipiv, b, ldb)
     }
@@ -166,7 +166,7 @@ pub fn dgesv(
     ldb: i32,
 ) -> Result<()> {
     check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?;
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(target_arch = "aarch64"))]
     {
         // SAFETY: buffers cover the `lda·n` / `n` / `ldb·nrhs` elements that
         // `LAPACKE_dgesv` touches, per `check_solve_dims` above.
@@ -187,7 +187,7 @@ pub fn dgesv(
         }
         Ok(())
     }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(target_arch = "aarch64")]
     {
         aarch64::dgesv(layout, n, nrhs, a, lda, ipiv, b, ldb)
     }
@@ -204,7 +204,7 @@ pub fn sgetrf(
     ipiv: &mut [i32],
 ) -> Result<()> {
     check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(target_arch = "aarch64"))]
     {
         // SAFETY: `a` covers `lda·n` elements and `ipiv` covers `min(m,n)`,
         // per `check_factor_dims` above; `m`, `n`, `lda` are non-negative.
@@ -216,7 +216,7 @@ pub fn sgetrf(
         }
         Ok(())
     }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(target_arch = "aarch64")]
     {
         aarch64::sgetrf(layout, m, n, a, lda, ipiv)
     }
@@ -232,7 +232,7 @@ pub fn dgetrf(
     ipiv: &mut [i32],
 ) -> Result<()> {
     check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(target_arch = "aarch64"))]
     {
         // SAFETY: `a` covers `lda·n` elements and `ipiv` covers `min(m,n)`,
         // per `check_factor_dims` above.
@@ -244,20 +244,21 @@ pub fn dgetrf(
         }
         Ok(())
     }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(target_arch = "aarch64")]
     {
         aarch64::dgetrf(layout, m, n, a, lda, ipiv)
     }
 }
 
-/// Accelerate (`aarch64-apple-darwin`) LAPACK backend.
+/// aarch64 LAPACK backend (Accelerate on `aarch64-apple-darwin`, OpenBLAS on
+/// `aarch64-unknown-linux-gnu`).
 ///
-/// Calls the Fortran `_` entry points directly. Column-major input is passed
-/// through unchanged; row-major input is transposed to column-major, solved,
-/// and the result transposed back — mirroring the transpose LAPACKE performs
-/// internally on the Intel path, so the two backends agree on row-major
-/// semantics.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+/// Both fallbacks expose the same Fortran `_` entry points, so the shim is
+/// shared across every aarch64 target. Column-major input is passed through
+/// unchanged; row-major input is transposed to column-major, solved, and the
+/// result transposed back — mirroring the transpose LAPACKE performs
+/// internally on the Intel path, so the backends agree on row-major semantics.
+#[cfg(target_arch = "aarch64")]
 mod aarch64 {
     use super::*;
 

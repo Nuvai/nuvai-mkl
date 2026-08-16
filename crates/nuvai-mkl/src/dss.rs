@@ -6,9 +6,11 @@
 //! to CSC and solved with the Accelerate Sparse/SparseSolve backend
 //! (`_SparseFactorSymmetric_Double` + `_SparseSolveOpaque_Double`,
 //! ADR-0003 decision 7). Only the upper triangle is accepted on that backend;
-//! lower-triangle storage is rejected as unsupported. The backend is never
-//! silently selected: it is chosen by `cfg(target_arch)` exactly as on the
-//! other domains.
+//! lower-triangle storage is rejected as unsupported. On
+//! `aarch64-unknown-linux-gnu` there is no sparse backend (OpenBLAS covers only
+//! BLAS/LAPACK), so every operation returns [`ErrorKind::Unsupported`]. The
+//! backend is never silently selected: it is chosen by `cfg(target_arch)`
+//! exactly as on the other domains.
 //!
 //! Each `dss_*` routine interprets its own `opt` argument; the flags are *not*
 //! interchangeable between routines. In particular the matrix-structure flag
@@ -18,11 +20,11 @@
 //! flags to [`dss_solve_real_`]. Only the indexing/precision flags
 //! (`MKL_DSS_ZERO_BASED_INDEXING`) are passed to [`dss_create_`].
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 use std::os::raw::c_void;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::os::raw::c_long;
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 use std::ptr;
 
 use crate::error::{Error, Result};
@@ -31,12 +33,19 @@ use crate::error::{Error, Result};
 /// aarch64 it is the Accelerate `SparseOpaqueFactorization_Double` (104 bytes)
 /// owned by value, since `_SparseFactorSymmetric_Double` returns it by value
 /// and `solve`/`Drop` consume it.
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 type DssHandle = *mut c_void;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 type DssHandle = nuvai_mkl_sys::SparseOpaqueFactorization_Double;
+/// No DSS backend on `aarch64-unknown-linux-gnu`: [`Dss`] is never constructed
+/// there (every operation returns [`ErrorKind::Unsupported`]).
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+type DssHandle = ();
 
 /// A factorized DSS handle (double precision, real symmetric).
+// On `aarch64-unknown-linux-gnu` no `Dss` can be constructed, so the `handle`
+// field is never read there.
+#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
 pub struct Dss {
     handle: DssHandle,
 }
@@ -46,6 +55,13 @@ impl Dss {
     /// CSR (0-based): `row_index` has length `n + 1`; `columns` and `values`
     /// have length `nnz`.
     pub fn factor_symmetric(row_index: &[i32], columns: &[i32], values: &[f64]) -> Result<Self> {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No DSS backend on aarch64-unknown-linux-gnu (OpenBLAS covers
+            // only BLAS/LAPACK).
+            let _ = (row_index, columns, values);
+            Err(Error::unsupported_linux_aarch64("DSS"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let n_rows = (row_index.len() as i32) - 1;
@@ -92,7 +108,7 @@ impl Dss {
             }
             Ok(Self { handle: factor })
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             let n_rows = (row_index.len() as i32) - 1;
             let n_cols = n_rows;
@@ -157,6 +173,12 @@ impl Dss {
 
     /// Solve for a single right-hand side; returns the solution.
     pub fn solve(&self, rhs: &[f64]) -> Result<Vec<f64>> {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No DSS backend on aarch64-unknown-linux-gnu.
+            let _ = rhs;
+            Err(Error::unsupported_linux_aarch64("DSS"))
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let n = self.handle.symbolicFactorization.rowCount;
@@ -165,7 +187,7 @@ impl Dss {
             }
             crate::pardiso::solve_with_factor(&self.handle, n, rhs)
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             let n_rhs = 1i32;
             let opt_solve = 0i32; // normal (non-transpose, non-conjugate) solve
@@ -193,6 +215,11 @@ impl Dss {
 
 impl Drop for Dss {
     fn drop(&mut self) {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No DSS backend on aarch64-unknown-linux-gnu: a `Dss` can never
+            // be constructed there, so there is nothing to release.
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             // SAFETY: `self.handle` is an owned factorization, released exactly
@@ -201,7 +228,7 @@ impl Drop for Dss {
                 nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut self.handle);
             }
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_arch = "aarch64"))]
         {
             // `dss_delete` takes the plain `opt = 0` (it does not accept the
             // zero-based-indexing flag).

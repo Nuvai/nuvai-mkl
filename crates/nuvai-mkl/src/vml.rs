@@ -5,7 +5,9 @@
 //! argument order). On Apple Silicon (`aarch64-apple-darwin`) they call the
 //! Accelerate vForce functions, which use the reversed `(dst, src, n)` order
 //! and different symbol names; the [`vml_unary!`] macro carries both symbols
-//! and each cfg branch emits the matching call.
+//! and each cfg branch emits the matching call. On `aarch64-unknown-linux-gnu`
+//! there is no VML/vForce backend (OpenBLAS covers only BLAS/LAPACK), so every
+//! function returns [`ErrorKind::Unsupported`].
 
 use std::os::raw::c_int;
 
@@ -31,20 +33,32 @@ macro_rules! vml_unary {
     ($(#[$doc:meta])* $name:ident, $mkl:ident, $vforce:ident, $ty:ty) => {
         $(#[$doc])*
         pub fn $name(src: &[$ty], dst: &mut [$ty]) -> Result<()> {
-            let n = check(src.len(), dst.len(), stringify!($name))?;
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
             {
-                // SAFETY: `src`/`dst` have equal length `n` (checked above);
-                // vForce reads `n` elements from `src` and writes `n` to `dst`.
-                unsafe { nuvai_mkl_sys::$vforce(dst.as_mut_ptr(), src.as_ptr(), &n) };
-                Ok(())
+                // No VML/vForce backend on aarch64-unknown-linux-gnu
+                // (OpenBLAS covers only BLAS/LAPACK). Return Unsupported before
+                // validating the arguments so feature-detection callers get the
+                // documented error regardless of their inputs.
+                let _ = (src, dst);
+                Err(Error::unsupported_linux_aarch64("VML"))
             }
-            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
             {
-                // SAFETY: `src`/`dst` have equal length `n` (checked above);
-                // VML reads `n` elements from `src` and writes `n` to `dst`.
-                unsafe { nuvai_mkl_sys::$mkl(n, src.as_ptr(), dst.as_mut_ptr()) };
-                Ok(())
+                let n = check(src.len(), dst.len(), stringify!($name))?;
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                {
+                    // SAFETY: `src`/`dst` have equal length `n` (checked above);
+                    // vForce reads `n` elements from `src` and writes `n` to `dst`.
+                    unsafe { nuvai_mkl_sys::$vforce(dst.as_mut_ptr(), src.as_ptr(), &n) };
+                    Ok(())
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    // SAFETY: `src`/`dst` have equal length `n` (checked above);
+                    // VML reads `n` elements from `src` and writes `n` to `dst`.
+                    unsafe { nuvai_mkl_sys::$mkl(n, src.as_ptr(), dst.as_mut_ptr()) };
+                    Ok(())
+                }
             }
         }
     };

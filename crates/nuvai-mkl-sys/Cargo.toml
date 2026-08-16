@@ -13,10 +13,10 @@ build = "build.rs"
 
 [features]
 # Forward backend selection to `nuvai-mkl-src`, the sole link-directive
-# emitter. `accelerate` (default) links the Accelerate framework on aarch64;
-# `openblas` links -lopenblas instead. On every other target these flags are
-# no-ops (Intel MKL is used and the fallback code is cfg(target_arch =
-# "aarch64")-gated).
+# emitter. `accelerate` (default) links the Accelerate framework on Apple
+# Silicon; `openblas` links -lopenblas instead. On aarch64-unknown-linux-gnu
+# OpenBLAS is the only backend and on Intel targets these flags are no-ops
+# (the fallback code is cfg(target_arch = "aarch64")-gated).
 default = ["accelerate"]
 accelerate = ["nuvai-mkl-src/accelerate"]
 openblas = ["nuvai-mkl-src/openblas"]
@@ -27,7 +27,8 @@ nuvai-mkl-src = { workspace = true }
 [build-dependencies]
 nuvai-mkl-src = { workspace = true }
 
-# bindgen is only needed where oneMKL headers exist; on aarch64-apple-darwin
-# the FFI surface is hand-written and x86_64-apple-darwin is unsupported.
-[target.'cfg(not(target_os = "macos"))'.build-dependencies]
+# bindgen is only needed where oneMKL headers exist (Intel targets). On
+# aarch64-apple-darwin and aarch64-unknown-linux-gnu the FFI surface is
+# hand-written and x86_64-apple-darwin is unsupported.
+[target.'cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))'.build-dependencies]
 bindgen = "0.71"

@@ -68,15 +68,18 @@ impl FftPlan {
     }
 
     fn create(len: usize, single: bool) -> Result<Self> {
-        if len == 0 {
-            return Err(Error::invalid("FFT length must be positive"));
-        }
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         {
             // No FFT backend on aarch64-unknown-linux-gnu (OpenBLAS covers
-            // only BLAS/LAPACK).
+            // only BLAS/LAPACK). Return Unsupported before validating `len` so
+            // feature-detection callers get the documented error even for
+            // `len == 0`.
             let _ = (len, single);
             Err(Error::unsupported_linux_aarch64("FFT"))
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+        if len == 0 {
+            return Err(Error::invalid("FFT length must be positive"));
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {

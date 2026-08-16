@@ -100,6 +100,15 @@ impl Stream {
 
     /// Fill `out` with uniforms in `[a, b)` (single precision).
     pub fn uniform(&self, a: f32, b: f32, out: &mut [f32]) -> Result<()> {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No VSL backend on aarch64-unknown-linux-gnu. Return Unsupported
+            // before validating the range so feature-detection callers get the
+            // documented error regardless of their arguments.
+            let _ = (a, b, out);
+            Err(Error::unsupported_linux_aarch64("VSL"))
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
         // `a..b` is empty (or NaN) when `a >= b`: Intel VSL returns
         // `VSL_ERROR_BADARGS`, but the aarch64 `rand` backend would panic.
         // Reject it up front so both backends fail identically with an error.
@@ -107,12 +116,6 @@ impl Stream {
         // so only `Some(Less)` is an acceptable non-empty range.
         if a.partial_cmp(&b) != Some(std::cmp::Ordering::Less) {
             return Err(Error::invalid("uniform: a must be < b (empty range)"));
-        }
-        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        {
-            // No VSL backend on aarch64-unknown-linux-gnu.
-            let _ = out;
-            Err(Error::unsupported_linux_aarch64("VSL"))
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
@@ -147,16 +150,19 @@ impl Stream {
 
     /// Fill `out` with uniforms in `[a, b)` (double precision).
     pub fn uniform64(&self, a: f64, b: f64, out: &mut [f64]) -> Result<()> {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // No VSL backend on aarch64-unknown-linux-gnu. Return Unsupported
+            // before validating the range so feature-detection callers get the
+            // documented error regardless of their arguments.
+            let _ = (a, b, out);
+            Err(Error::unsupported_linux_aarch64("VSL"))
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
         // See `uniform`: reject the empty/NaN range that would panic the
         // aarch64 `rand` backend, matching Intel VSL's error behaviour.
         if a.partial_cmp(&b) != Some(std::cmp::Ordering::Less) {
             return Err(Error::invalid("uniform64: a must be < b (empty range)"));
-        }
-        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        {
-            // No VSL backend on aarch64-unknown-linux-gnu.
-            let _ = out;
-            Err(Error::unsupported_linux_aarch64("VSL"))
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {

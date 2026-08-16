@@ -33,27 +33,32 @@ macro_rules! vml_unary {
     ($(#[$doc:meta])* $name:ident, $mkl:ident, $vforce:ident, $ty:ty) => {
         $(#[$doc])*
         pub fn $name(src: &[$ty], dst: &mut [$ty]) -> Result<()> {
-            let n = check(src.len(), dst.len(), stringify!($name))?;
             #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
             {
                 // No VML/vForce backend on aarch64-unknown-linux-gnu
-                // (OpenBLAS covers only BLAS/LAPACK).
-                let _ = n;
+                // (OpenBLAS covers only BLAS/LAPACK). Return Unsupported before
+                // validating the arguments so feature-detection callers get the
+                // documented error regardless of their inputs.
+                let _ = (src, dst);
                 Err(Error::unsupported_linux_aarch64("VML"))
             }
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
             {
-                // SAFETY: `src`/`dst` have equal length `n` (checked above);
-                // vForce reads `n` elements from `src` and writes `n` to `dst`.
-                unsafe { nuvai_mkl_sys::$vforce(dst.as_mut_ptr(), src.as_ptr(), &n) };
-                Ok(())
-            }
-            #[cfg(not(target_arch = "aarch64"))]
-            {
-                // SAFETY: `src`/`dst` have equal length `n` (checked above);
-                // VML reads `n` elements from `src` and writes `n` to `dst`.
-                unsafe { nuvai_mkl_sys::$mkl(n, src.as_ptr(), dst.as_mut_ptr()) };
-                Ok(())
+                let n = check(src.len(), dst.len(), stringify!($name))?;
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                {
+                    // SAFETY: `src`/`dst` have equal length `n` (checked above);
+                    // vForce reads `n` elements from `src` and writes `n` to `dst`.
+                    unsafe { nuvai_mkl_sys::$vforce(dst.as_mut_ptr(), src.as_ptr(), &n) };
+                    Ok(())
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    // SAFETY: `src`/`dst` have equal length `n` (checked above);
+                    // VML reads `n` elements from `src` and writes `n` to `dst`.
+                    unsafe { nuvai_mkl_sys::$mkl(n, src.as_ptr(), dst.as_mut_ptr()) };
+                    Ok(())
+                }
             }
         }
     };

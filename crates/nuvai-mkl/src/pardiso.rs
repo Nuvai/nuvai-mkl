@@ -43,28 +43,26 @@ pub mod mtype {
 ///
 /// On Intel targets this holds the PARDISO `pt`/`iparm` state. On Apple
 /// Silicon the Accelerate backend performs a self-contained factor+solve per
-/// call and keeps only the caller's `mtype`, so the handle carries no inert
-/// 768-byte PARDISO state.
-#[cfg(not(target_arch = "aarch64"))]
+/// call and keeps only the caller's `mtype`, so the 768-byte PARDISO state is
+/// cfg'd out. On `aarch64-unknown-linux-gnu` there is no PARDISO backend and
+/// the handle is inert (every `solve` returns [`ErrorKind::Unsupported`]).
 pub struct Pardiso {
+    /// PARDISO internal state (Intel targets only).
+    #[cfg(not(target_arch = "aarch64"))]
     pt: [*mut c_void; 64],
+    /// The matrix type — read by every backend that can solve; stored but
+    /// never read on linux-aarch64 (where no `solve` ever runs).
+    #[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
     mtype: i32,
+    /// PARDISO control array (Intel targets only).
+    #[cfg(not(target_arch = "aarch64"))]
     iparm: [i32; 64],
+    /// System size from the most recent `solve` (Intel targets only).
+    #[cfg(not(target_arch = "aarch64"))]
     n: i32,
+    /// True once the analysis phase has run (Intel targets only).
+    #[cfg(not(target_arch = "aarch64"))]
     analyzed: bool,
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub struct Pardiso {
-    mtype: i32,
-}
-
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-pub struct Pardiso {
-    // No PARDISO backend on this target: the handle is inert (mtype is never
-    // read because every `solve` returns Unsupported).
-    #[allow(dead_code)]
-    mtype: i32,
 }
 
 impl Pardiso {
@@ -89,14 +87,11 @@ impl Pardiso {
                 analyzed: false,
             }
         }
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(target_arch = "aarch64")]
         {
-            Self { mtype }
-        }
-        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        {
-            // No PARDISO backend on aarch64-unknown-linux-gnu; the handle is
-            // inert and every `solve` returns Unsupported.
+            // On the aarch64 fallbacks the handle carries only `mtype`: the
+            // Accelerate backend factors+solves per call, and linux-aarch64 has
+            // no PARDISO backend (every `solve` returns Unsupported).
             Self { mtype }
         }
     }
@@ -520,16 +515,11 @@ pub(crate) fn default_numeric_options() -> nuvai_mkl_sys::SparseNumericFactorOpt
 
 impl Drop for Pardiso {
     fn drop(&mut self) {
-        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        #[cfg(target_arch = "aarch64")]
         {
-            // No PARDISO backend on aarch64-unknown-linux-gnu: the handle is
-            // inert, so there is nothing to release.
-        }
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        {
-            // The Accelerate backend keeps no persistent handle state: the
-            // QR factorization is created and destroyed inside `solve_accelerate`,
-            // so there is nothing to release here.
+            // Nothing to release on the aarch64 fallbacks: the Accelerate
+            // backend creates and destroys its QR factorization inside
+            // `solve_accelerate`, and linux-aarch64 has no PARDISO backend.
         }
         #[cfg(not(target_arch = "aarch64"))]
         {

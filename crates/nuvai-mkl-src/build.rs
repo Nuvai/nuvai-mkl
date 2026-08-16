@@ -1,10 +1,18 @@
 //! Build script for `nuvai-mkl-src`: locate oneMKL 2026.1.0 (Intel x86_64) or
-//! emit the Apple Silicon fallback linker directives (Accelerate / OpenBLAS).
+//! emit the fallback linker directives (Accelerate / OpenBLAS).
 //!
 //! On `aarch64-apple-darwin`, Intel ships no oneMKL, so this script never calls
 //! [`locate`]; it emits `-framework Accelerate` (default) or `-lopenblas`
-//! (`openblas` feature). The Intel x86_64 path is byte-identical to the
-//! pre-fallback behaviour and is selected by [`backend`].
+//! (`openblas` feature). On `aarch64-unknown-linux-gnu` it emits `-lopenblas`.
+//! The Intel x86_64 path is byte-identical to the pre-fallback behaviour and is
+//! selected by [`backend_for_target`].
+//!
+//! Build scripts compile for and run on the *host*, so `#[cfg(...)]` here would
+//! describe the host, not the crate being built. The backend is therefore
+//! selected from the target triple Cargo exposes as `CARGO_CFG_TARGET_OS` /
+//! `CARGO_CFG_TARGET_ARCH` / `CARGO_CFG_TARGET_ENV` — without this,
+//! cross-compiling `--target aarch64-unknown-linux-gnu` from an x86_64 host
+//! would select `IntelMkl` and emit x86_64 MKL directives for an ARM target.
 
 include!("src/acquire.rs");
 include!("src/backend.rs");
@@ -22,8 +30,18 @@ fn main() {
         return;
     }
 
-    match backend() {
-        Backend::IntelMkl => emit_intel_mkl(),
+    // The backend is a property of the *target* being built, not of the host
+    // this build script runs on (see the module docs above).
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS is set");
+    let target_arch =
+        std::env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH is set");
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").ok();
+
+    let backend = backend_for_target(&target_os, &target_arch, target_env.as_deref())
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    match backend {
+        Backend::IntelMkl => emit_intel_mkl(&target_os),
         Backend::Accelerate => {
             println!("cargo:rustc-link-lib=framework=Accelerate");
             println!("cargo:metadata=BACKEND=accelerate");
@@ -34,53 +52,55 @@ fn main() {
             // macOS: OpenBLAS replaces only BLAS/LAPACK (vecLib); FFT (vDSP),
             // VML (vForce) and the sparse solvers (Sparse/SparseSolve) still
             // call Accelerate, so both must be linked on this path.
-            #[cfg(target_os = "macos")]
-            {
+            if target_os == "macos" {
                 println!("cargo:rustc-link-lib=framework=Accelerate");
             }
             // Linux-aarch64: OpenBLAS is the only backend and covers only
             // BLAS/LAPACK, so there is no Accelerate to link. A distro
-            // `libopenblas-dev` lives in the system search path and needs no
-            // rpath; an explicit OPENBLAS_ROOT (e.g. a conda/pip install)
-            // contributes its `lib` dir to the search path and rpath.
-            #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+            // `libopenblas-dev` lives in the system search path; an explicit
+            // OPENBLAS_ROOT (e.g. a conda/pip install) contributes its `lib`
+            // dir to the link search path. The runtime *rpath* is deliberately
+            // not emitted here: `cargo:rustc-link-arg` only applies to the
+            // emitting package's own targets, and this crate owns no binaries —
+            // the crate that owns the test/example binaries (`nuvai-mkl/build.rs`)
+            // emits the rpath instead.
+            if target_os == "linux"
+                && target_arch == "aarch64"
+                && let Ok(root) = std::env::var("OPENBLAS_ROOT")
+                && !root.trim().is_empty()
             {
-                if let Ok(root) = std::env::var("OPENBLAS_ROOT")
-                    && !root.trim().is_empty()
-                {
-                    let lib = format!("{root}/lib");
-                    println!("cargo:rustc-link-search=native={lib}");
-                    println!("cargo:rustc-link-arg=-Wl,-rpath,{lib}");
-                }
+                println!("cargo:rustc-link-search=native={root}/lib");
             }
         }
     }
 }
 
 /// Emit the Intel oneMKL linker directives (x86_64 Linux/Windows).
-fn emit_intel_mkl() {
+fn emit_intel_mkl(target_os: &str) {
     let info = locate();
 
     println!("cargo:rustc-link-search=native={}", info.lib_dir.display());
 
-    #[cfg(target_os = "linux")]
-    {
-        println!("cargo:rustc-link-lib=dylib=mkl_rt");
-        println!("cargo:rustc-link-lib=dylib=dl");
-        println!("cargo:rustc-link-lib=dylib=pthread");
-        println!("cargo:rustc-link-lib=dylib=m");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", info.lib_dir.display());
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // conda win-64 `mkl` ships 26 DLLs but zero import libs; `mkl-devel`
-        // ships `mkl_rt.lib` (which embeds `mkl_rt.3.dll`). Link that import
-        // lib. `user32` is a dependency of the MKL DLLs on Windows.
-        println!("cargo:rustc-link-lib=dylib=mkl_rt");
-        println!("cargo:rustc-link-lib=dylib=user32");
+    match target_os {
+        "linux" => {
+            println!("cargo:rustc-link-lib=dylib=mkl_rt");
+            println!("cargo:rustc-link-lib=dylib=dl");
+            println!("cargo:rustc-link-lib=dylib=pthread");
+            println!("cargo:rustc-link-lib=dylib=m");
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", info.lib_dir.display());
+        }
+        "windows" => {
+            // conda win-64 `mkl` ships 26 DLLs but zero import libs; `mkl-devel`
+            // ships `mkl_rt.lib` (which embeds `mkl_rt.3.dll`). Link that import
+            // lib. `user32` is a dependency of the MKL DLLs on Windows.
+            println!("cargo:rustc-link-lib=dylib=mkl_rt");
+            println!("cargo:rustc-link-lib=dylib=user32");
+        }
+        _ => panic!("Intel oneMKL is only acquired for x86_64 Linux/Windows targets"),
     }
 
-    // Informational metadata (also surfaced to downstream build scripts).
+    // Informational metadata, surfaced to downstream build scripts as
+    // `DEP_MKL_*` (this crate declares `links = "mkl"`).
     println!("cargo:metadata=INCLUDE_DIR={}", info.include_dir.display());
     println!("cargo:metadata=LIB_DIR={}", info.lib_dir.display());
     for dll_dir in &info.dll_dirs {

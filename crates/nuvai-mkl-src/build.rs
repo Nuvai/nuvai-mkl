@@ -87,6 +87,10 @@ fn emit_intel_mkl(target_os: &str) {
             println!("cargo:rustc-link-lib=dylib=dl");
             println!("cargo:rustc-link-lib=dylib=pthread");
             println!("cargo:rustc-link-lib=dylib=m");
+            if let Some(omp) = &info.omp_lib_dir {
+                println!("cargo:rustc-link-search=native={}", omp.display());
+                println!("cargo:rustc-link-lib=dylib=iomp5");
+            }
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", info.lib_dir.display());
         }
         "windows" => {

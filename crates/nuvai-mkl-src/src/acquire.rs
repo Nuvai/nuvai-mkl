@@ -59,6 +59,17 @@ const WIN_LLVM_OPENMP_SHA256: &str =
     "50c02902bb516eeb56680358f052be38b5bf74b40e78ea4b2a675e84957e7307";
 #[cfg(not(target_arch = "aarch64"))]
 const WIN_TBB_SHA256: &str = "e55a2f1324f0fc8916ab8d590a3944ba1af62de727bb66e3019cf2744d26e679";
+// The linux-64 `mkl` package's `libmkl_intel_thread.so.3` leaves its OpenMP
+// `omp_*` symbols undefined (no DT_NEEDED on the runtime), exactly as the
+// win-64 build does — so the OpenMP runtime must be fetched and linked
+// explicitly. conda-forge ships it as `llvm-openmp` on both platforms (the
+// `intel-openmp` package is win-64 only); on linux-64 it provides
+// `libiomp5.so` (a symlink to `libomp.so`).
+#[cfg(not(target_arch = "aarch64"))]
+const LINUX_LLVM_OPENMP: &str = "llvm-openmp-22.1.8-h4922eb0_0.conda";
+#[cfg(not(target_arch = "aarch64"))]
+const LINUX_LLVM_OPENMP_SHA256: &str =
+    "a37aba21b85800af1e7c5b04ba76abab96b6e591eedf99dc6e4df83b0fefd7a5";
 
 /// Resolved location of an MKL install.
 #[derive(Debug, Clone)]
@@ -67,6 +78,12 @@ pub struct MklInfo {
     pub include_dir: PathBuf,
     /// Directory containing the MKL libraries.
     pub lib_dir: PathBuf,
+    /// Directory containing the OpenMP runtime (`libiomp5.so`, a symlink to
+    /// `libomp.so`) that `libmkl_intel_thread.so.3` needs at load time. Linux
+    /// conda acquisition only; `None` on Windows (the runtime DLL is surfaced
+    /// via [`dll_dirs`]) and on a system oneAPI install (its OpenMP runtime
+    /// ships beside MKL and the loader finds it on the standard path).
+    pub omp_lib_dir: Option<PathBuf>,
     /// Directories containing the MKL runtime DLLs (Windows only; empty on
     /// platforms where the runtime loader finds them via rpath / system search).
     ///
@@ -157,7 +174,7 @@ fn system_mkl() -> Option<MklInfo> {
     } else {
         Vec::new()
     };
-    Some(MklInfo { include_dir, lib_dir, dll_dirs })
+    Some(MklInfo { include_dir, lib_dir, omp_lib_dir: None, dll_dirs })
 }
 
 /// Download + extract MKL into the shared cache, returning its paths.
@@ -175,7 +192,7 @@ fn download_mkl() -> MklInfo {
             (LINUX_MKL, LINUX_MKL_SHA256),
             (LINUX_INCLUDE, LINUX_INCLUDE_SHA256),
             None,
-            &[][..],
+            &[(LINUX_LLVM_OPENMP, LINUX_LLVM_OPENMP_SHA256)][..],
         ),
         // The win-64 `mkl` package is 26 DLLs with no `.lib` — import libs ship
         // in a third package, `mkl-devel`. Its threading layers also need the
@@ -208,14 +225,22 @@ fn download_mkl() -> MklInfo {
         MklInfo {
             include_dir: include_root.join("Library").join("include"),
             lib_dir: devel_root.join("Library").join("lib"),
+            omp_lib_dir: None,
             dll_dirs,
         }
     } else {
         // Linux conda packages lay out headers under `include/` and libs under
         // `lib/`; the runtime loader finds the shared objects via rpath.
+        let mut omp_lib_dir = None;
+        for (file, sha) in runtime {
+            // The runtime entries are OpenMP runtime packages (`llvm-openmp`)
+            // whose `lib/` holds `libiomp5.so` (a symlink to `libomp.so`).
+            omp_lib_dir = Some(fetch_and_extract_conda(file, sha, &pkg_dir).join("lib"));
+        }
         MklInfo {
             include_dir: include_root.join("include"),
             lib_dir: mkl_root.join("lib"),
+            omp_lib_dir,
             dll_dirs: Vec::new(),
         }
     }

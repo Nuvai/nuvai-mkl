@@ -37,3 +37,9 @@ rand_distr = "0.6.0"
 
 [build-dependencies]
 nuvai-mkl-src = { workspace = true }
+
+# docs.rs has no network and no MKL; build with no features so the
+# docs.rs build never pulls acquisition/linking (build.rs also short-circuits on DOCS_RS).
+[package.metadata.docs.rs]
+all-features = false
+default-features = false

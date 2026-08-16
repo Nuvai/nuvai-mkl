@@ -18,6 +18,12 @@
 //! x86_64 host selects the hand-written OpenBLAS surface instead of running the
 //! Intel bindgen path (`nuvai_mkl_src::locate()` is unavailable on an aarch64
 //! host and would also acquire the wrong-architecture headers).
+//!
+//! # docs.rs
+//!
+//! The docs.rs build has no network and no MKL. docs.rs sets the `DOCS_RS`
+//! environment variable, so this script returns before `nuvai_mkl_src::locate()`
+//! / bindgen on every target — mirroring the guard in `nuvai-mkl-src/build.rs`.
 
 #![allow(unused_imports)] // `PathBuf` is used only on Intel host builds
 
@@ -27,9 +33,15 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=wrapper.h");
     println!("cargo:rerun-if-env-changed=MKLROOT");
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
     println!("cargo:rerun-if-changed=src/aarch64.rs");
     println!("cargo:rerun-if-changed=src/linux_aarch64.rs");
     println!("cargo:rerun-if-changed=src/netlib_abi.rs");
+
+    // docs.rs has no network and no MKL; skip locate()/bindgen there.
+    if std::env::var("DOCS_RS").is_ok() {
+        return;
+    }
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS is set");
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH is set");

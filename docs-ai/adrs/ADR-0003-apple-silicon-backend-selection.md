@@ -75,11 +75,16 @@ extends to `aarch64-unknown-linux-gnu`:
 
 8. **OpenBLAS is the sole backend on aarch64-unknown-linux-gnu.** Unlike Apple
    Silicon there is no OS-provided multi-domain framework: OpenBLAS covers only
-   BLAS/LAPACK. The backend is therefore selected unconditionally by
-   `cfg(all(target_os = "linux", target_arch = "aarch64"))` — the
-   `accelerate`/`openblas` Cargo features are no-ops there — and `nuvai-mkl-src`
-   emits `-lopenblas` (adding an `OPENBLAS_ROOT/lib` rpath when `OPENBLAS_ROOT`
-   is set, for conda/pip installs).
+   BLAS/LAPACK. The backend is therefore selected unconditionally for the glibc
+   target by `cfg(all(target_os = "linux", target_arch = "aarch64",
+   target_env = "gnu"))` — the `target_env = "gnu"` guard rejects musl/Android
+   Linux, where no glibc OpenBLAS exists — the `accelerate`/`openblas` Cargo
+   features are no-ops there — and `nuvai-mkl-src`
+   emits `-lopenblas` and, when `OPENBLAS_ROOT` is set, adds `{root}/lib` to the
+   propagated link-search path (for conda/pip installs). The runtime rpath is
+   emitted where the binaries live: `nuvai-mkl`'s build script sets it for the
+   workspace's own test/example targets (`cargo:rustc-link-arg` does not
+   propagate from a dependency crate), and downstream binaries set their own.
 
 9. **Unsupported domains return `ErrorKind::Unsupported`.** FFT (no DFTI/vDSP),
    VML (no vForce), VSL (no `rand` backend is wired on Linux), PARDISO and DSS

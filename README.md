@@ -87,7 +87,7 @@ not exist there).
 - Rust (built against **1.99 nightly**, edition 2024).
 - First build downloads ~140 MB of MKL into `~/.cache/nuvai-mkl/` (cached thereafter; on Windows the cache falls back to `%USERPROFILE%\.cache\nuvai-mkl` since `HOME` is often unset, and the acquisition also fetches `mkl-devel`, `llvm-openmp` and `tbb`).
 - `libclang` + `bindgen` for regenerating FFI bindings on Intel targets (LLVM on Windows, `libclang-dev` on Linux). The ARM64 aarch64 targets use a hand-written FFI surface and need no libclang.
-- On `aarch64-unknown-linux-gnu`, OpenBLAS is the sole backend: install `libopenblas-dev` (or point `OPENBLAS_ROOT` at a conda/pip install whose `lib` dir is added to the link search path and rpath).
+- On `aarch64-unknown-linux-gnu`, OpenBLAS is the sole backend: install `libopenblas-dev` (system default search path), or point `OPENBLAS_ROOT` at a conda/pip install — `nuvai-mkl-src` adds its `lib` dir to the propagated link-search path, and the workspace's own test/example binaries get the matching runtime rpath via `nuvai-mkl`'s build script (`cargo:rustc-link-arg` only applies to the emitting crate's own targets, so downstream crates linking a non-system OpenBLAS must set their own rpath).
 
 ## Usage
 

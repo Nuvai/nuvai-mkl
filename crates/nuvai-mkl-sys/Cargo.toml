@@ -32,3 +32,9 @@ nuvai-mkl-src = { workspace = true }
 # hand-written and x86_64-apple-darwin is unsupported.
 [target.'cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))'.build-dependencies]
 bindgen = "0.71"
+
+# docs.rs has no network and no MKL; build with no features so the
+# docs.rs build never pulls acquisition/linking (build.rs also short-circuits on DOCS_RS).
+[package.metadata.docs.rs]
+all-features = false
+default-features = false

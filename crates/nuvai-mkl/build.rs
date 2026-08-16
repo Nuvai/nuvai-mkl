@@ -47,6 +47,15 @@ fn main() {
             let info = nuvai_mkl_src::locate();
             println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-lm,--as-needed");
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", info.lib_dir.display());
+            if let Some(omp) = &info.omp_lib_dir {
+                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", omp.display());
+                // `libmkl_intel_thread.so.3` references `omp_*` symbols without
+                // a DT_NEEDED on the OpenMP runtime, so keep `libiomp5.so` in
+                // the final link the same way libm is kept (see above): the
+                // test/example objects never reference it directly, so plain
+                // `--as-needed` would drop it from DT_NEEDED.
+                println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-liomp5,--as-needed");
+            }
         }
         // Intel x86_64 Windows: no rpath; the loader resolves `mkl_rt.3.dll`
         // (and `libiomp5md.dll` / `tbb12.dll`) at process start from PATH (or

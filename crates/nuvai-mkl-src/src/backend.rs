@@ -42,6 +42,26 @@ compile_error!(
      (Apple Silicon, Accelerate/OpenBLAS) or an x86_64 Linux/Windows target."
 );
 
+// The aarch64 fallback exists on exactly two targets: `aarch64-apple-darwin`
+// (Accelerate or OpenBLAS) and `aarch64-unknown-linux-gnu` (OpenBLAS — the
+// only backend there). Every other aarch64 target — musl Linux (no glibc
+// OpenBLAS), Android, Windows, FreeBSD — has no oneMKL and no supported
+// fallback. Reject at compile time rather than silently returning `IntelMkl`
+// and emitting x86_64 MKL directives an aarch64 toolchain cannot link (the
+// pre-fallback behaviour of returning `IntelMkl` from the catch-all arm
+// produced exactly that). Selection is explicit, never silent (ADR-0003).
+#[cfg(all(
+    target_arch = "aarch64",
+    not(target_os = "macos"),
+    not(all(target_os = "linux", target_env = "gnu"))
+))]
+compile_error!(
+    "nuvai-mkl-src: unsupported aarch64 target — Intel ships no oneMKL for aarch64, \
+     and the fallback backends exist only on aarch64-apple-darwin (Accelerate/OpenBLAS) \
+     and aarch64-unknown-linux-gnu (OpenBLAS, glibc). For Linux use the glibc target \
+     (aarch64-unknown-linux-gnu); musl/Android/Windows/FreeBSD aarch64 have no backend."
+);
+
 /// The link backend selected for the current build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -62,6 +82,12 @@ pub enum Backend {
 /// `aarch64-unknown-linux-gnu` OpenBLAS is the only backend (no vDSP/vForce/
 /// Sparse exists on Linux) and both features are inert. On every other target
 /// Intel MKL is used and the feature flags are ignored.
+///
+/// This is the *library-time* selector: its `#[cfg(...)]` reflects the target
+/// the crate is compiled for. Build scripts (which compile for the *host*)
+/// must use [`backend_for_target`] instead, passing the target triple from the
+/// `CARGO_CFG_TARGET_*` env vars, so cross-compilation picks the target's
+/// backend rather than the host's.
 pub fn backend() -> Backend {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
@@ -71,7 +97,7 @@ pub fn backend() -> Backend {
             Backend::Accelerate
         }
     }
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "gnu"))]
     {
         // OpenBLAS is the only backend on aarch64-unknown-linux-gnu; the
         // `accelerate`/`openblas` features are inert on this target.
@@ -79,10 +105,50 @@ pub fn backend() -> Backend {
     }
     #[cfg(not(any(
         all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "aarch64")
+        all(target_os = "linux", target_arch = "aarch64", target_env = "gnu")
     )))]
     {
         Backend::IntelMkl
+    }
+}
+
+/// Select the link backend for an explicit target triple.
+///
+/// Build scripts compile for and run on the *host*, so their `#[cfg(...)]`
+/// cannot describe the crate they are building for — but Cargo still sets
+/// `CARGO_CFG_TARGET_OS` / `CARGO_CFG_TARGET_ARCH` / `CARGO_CFG_TARGET_ENV` to
+/// the real *target* triple. Pass those here to select the target's backend.
+///
+/// Mirrors [`backend`]'s `#[cfg]` selection and rejects the same unsupported
+/// targets with an `Err` (rather than a compile error, since the build script
+/// is host-compiled and cannot `compile_error!` for the target).
+pub fn backend_for_target(
+    target_os: &str,
+    target_arch: &str,
+    target_env: Option<&str>,
+) -> Result<Backend, &'static str> {
+    match (target_os, target_arch, target_env) {
+        ("macos", "aarch64", _) => Ok(if cfg!(feature = "openblas") {
+            Backend::OpenBlas
+        } else {
+            Backend::Accelerate
+        }),
+        ("linux", "aarch64", _) if target_env == Some("gnu") => Ok(Backend::OpenBlas),
+        ("linux", "aarch64", _) => Err(
+            "nuvai-mkl-src: aarch64 Linux with a non-gnu libc (musl/android) is \
+             unsupported — the OpenBLAS fallback requires a glibc target \
+             (aarch64-unknown-linux-gnu)",
+        ),
+        (_, "aarch64", _) => Err(
+            "nuvai-mkl-src: unsupported aarch64 target — Intel ships no oneMKL for \
+             aarch64; the fallback backends exist only on aarch64-apple-darwin and \
+             aarch64-unknown-linux-gnu",
+        ),
+        ("macos", _, _) => Err(
+            "nuvai-mkl-src: x86_64-apple-darwin is unsupported — Intel's last macOS \
+             oneMKL was 2023.2.0",
+        ),
+        _ => Ok(Backend::IntelMkl),
     }
 }
 
@@ -110,11 +176,27 @@ mod tests {
         assert!(!backend_tag(b).is_empty());
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "gnu"))]
     #[test]
     fn linux_aarch64_selects_openblas() {
         // OpenBLAS is the only backend on aarch64-unknown-linux-gnu.
         assert_eq!(backend(), Backend::OpenBlas);
         assert_eq!(backend_tag(backend()), "openblas");
+    }
+
+    #[test]
+    fn backend_for_target_is_exhaustive() {
+        use super::{Backend, backend_for_target};
+
+        // The target-triple selector used by build scripts must agree with the
+        // cfg-based `backend()` for the supported targets, and reject the
+        // unsupported ones explicitly (never silently selecting IntelMkl).
+        assert_eq!(backend_for_target("linux", "aarch64", Some("gnu")), Ok(Backend::OpenBlas));
+        assert_eq!(backend_for_target("linux", "x86_64", Some("gnu")), Ok(Backend::IntelMkl));
+        assert_eq!(backend_for_target("windows", "x86_64", Some("msvc")), Ok(Backend::IntelMkl));
+        assert!(backend_for_target("linux", "aarch64", Some("musl")).is_err());
+        assert!(backend_for_target("linux", "aarch64", Some("android")).is_err());
+        assert!(backend_for_target("windows", "aarch64", Some("msvc")).is_err());
+        assert!(backend_for_target("macos", "x86_64", None).is_err());
     }
 }

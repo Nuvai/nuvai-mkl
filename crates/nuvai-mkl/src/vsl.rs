@@ -19,13 +19,11 @@ use std::os::raw::c_int;
 use std::ptr;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use rand::RngExt;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use rand::SeedableRng;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use rand_chacha::ChaCha20Rng;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use rand_distr::{Distribution, Normal};
+use rand_distr::{Distribution, Normal, Uniform};
 
 use crate::error::{Error, Result};
 
@@ -119,9 +117,14 @@ impl Stream {
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
+            // `random_range` re-validates the range on every element; hoist a
+            // single `Uniform` and fill the slice in one `sample_iter` pass.
+            // RNG consumption order is unchanged (one draw per element), so a
+            // fixed seed stays deterministic.
+            let distr = Uniform::new(a, b).expect("a < b was validated above");
             let mut rng = self.state.borrow_mut();
-            for v in out.iter_mut() {
-                *v = rng.random_range(a..b);
+            for (v, s) in out.iter_mut().zip(distr.sample_iter(&mut *rng)) {
+                *v = s;
             }
             Ok(())
         }
@@ -166,9 +169,14 @@ impl Stream {
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
+            // `random_range` re-validates the range on every element; hoist a
+            // single `Uniform` and fill the slice in one `sample_iter` pass.
+            // RNG consumption order is unchanged (one draw per element), so a
+            // fixed seed stays deterministic.
+            let distr = Uniform::new(a, b).expect("a < b was validated above");
             let mut rng = self.state.borrow_mut();
-            for v in out.iter_mut() {
-                *v = rng.random_range(a..b);
+            for (v, s) in out.iter_mut().zip(distr.sample_iter(&mut *rng)) {
+                *v = s;
             }
             Ok(())
         }
@@ -208,8 +216,8 @@ impl Stream {
             let distr = Normal::new(mean, sigma)
                 .map_err(|e| Error::invalid(format!("gaussian: {e}")))?;
             let mut rng = self.state.borrow_mut();
-            for v in out.iter_mut() {
-                *v = distr.sample(&mut *rng);
+            for (v, s) in out.iter_mut().zip(distr.sample_iter(&mut *rng)) {
+                *v = s;
             }
             Ok(())
         }
@@ -249,8 +257,8 @@ impl Stream {
             let distr = Normal::new(mean, sigma)
                 .map_err(|e| Error::invalid(format!("gaussian: {e}")))?;
             let mut rng = self.state.borrow_mut();
-            for v in out.iter_mut() {
-                *v = distr.sample(&mut *rng);
+            for (v, s) in out.iter_mut().zip(distr.sample_iter(&mut *rng)) {
+                *v = s;
             }
             Ok(())
         }

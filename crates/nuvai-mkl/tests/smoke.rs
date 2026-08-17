@@ -55,8 +55,74 @@ fn blas_axpy_dot() {
     blas::saxpy(3, 2.0, &x, 1, &mut y, 1).unwrap();
     assert_close(&y, &[12.0, 24.0, 36.0], 1e-5);
 
-    let dot = blas::sdot(3, &x, 1, &[4.0, 5.0, 6.0], 1);
+    let dot = blas::sdot(3, &x, 1, &[4.0, 5.0, 6.0], 1).unwrap();
     assert!((dot - 32.0).abs() <= 1e-5, "dot = {dot}");
+}
+
+#[test]
+fn blas_rejects_undersized_slices() {
+    // #20: an undersized operand must error, not drive MKL into a heap OOB
+    // read/write reachable from safe code. The huge `m` with a 4-element `a`
+    // is the exact UB shape from the issue.
+    let a = [1.0f32; 4];
+    let b = [1.0f32; 4];
+    let mut c = [0.0f32; 4];
+    assert!(blas::sgemm(
+        Layout::RowMajor,
+        Transpose::NoTrans,
+        Transpose::NoTrans,
+        100_000,
+        2,
+        2,
+        1.0,
+        &a,
+        2,
+        &b,
+        2,
+        0.0,
+        &mut c,
+        2,
+    )
+    .is_err());
+
+    // Leading dimension below the stored width (row-major `lda < k`).
+    let a = [1.0f32; 4];
+    let b = [1.0f32; 4];
+    let mut c = [0.0f32; 4];
+    assert!(blas::sgemm(
+        Layout::RowMajor,
+        Transpose::NoTrans,
+        Transpose::NoTrans,
+        2,
+        2,
+        2,
+        1.0,
+        &a,
+        1,
+        &b,
+        2,
+        0.0,
+        &mut c,
+        2,
+    )
+    .is_err());
+
+    // Level-1: undersized, zero stride, and negative count are all invalid.
+    let x = [1.0f32; 2];
+    let mut y = [0.0f32; 2];
+    assert!(blas::saxpy(3, 1.0, &x, 1, &mut y, 1).is_err());
+    assert!(blas::saxpy(3, 1.0, &x, 0, &mut y, 1).is_err());
+    assert!(blas::saxpy(-1, 1.0, &x, 1, &mut y, 1).is_err());
+
+    // `sdot`/`ddot` now return `Result`.
+    assert!(blas::sdot(3, &x, 1, &[1.0f32; 2], 1).is_err());
+    assert!(blas::ddot(3, &[1.0f64; 2], 1, &[1.0f64; 2], 1).is_err());
+
+    // `sscal`/`dscal` undersized.
+    let mut xs = [1.0f32; 2];
+    assert!(blas::sscal(3, 2.0, &mut xs, 1).is_err());
+    let mut xd = [1.0f64; 2];
+    assert!(blas::dscal(3, 2.0, &mut xd, 1).is_err());
 }
 
 #[test]

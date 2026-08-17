@@ -1,11 +1,13 @@
 //! BLAS (Basic Linear Algebra Subprograms) via the CBLAS interface.
 //!
 //! Dense linear-algebra primitives. Every routine takes slices and leading
-//! dimensions; the caller is responsible for sizing buffers to the BLAS
-//! convention (documented per function). MKL performs no bounds checking, so
-//! an under-sized slice is undefined behaviour exactly as in C.
+//! dimensions and validates them against the BLAS sizing convention before any
+//! pointer reaches CBLAS, mirroring `lapack::check_*_dims`. An undersized slice
+//! or leading dimension is rejected as `ErrorKind::InvalidArgument` rather than
+//! forwarded to MKL — which performs no bounds checking and would otherwise
+//! read/write out of bounds.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::layout::{Layout, Transpose};
 
 /// Integer type the FFI CBLAS enums use on this target. bindgen maps the C
@@ -35,6 +37,92 @@ fn cblas_trans(trans: Transpose) -> CblasEnum {
     }
 }
 
+/// Validate a `?gemm` call's buffers before any pointer reaches CBLAS.
+///
+/// `op(A)` is `m × k` (`k × m` when transposed), `op(B)` is `k × n` (`n × k`
+/// when transposed) and `C` is `m × n`. Each operand's leading dimension must
+/// cover its stored columns (row-major) or rows (column-major), and its slice
+/// must reach the trailing element CBLAS touches. Rejects undersized buffers —
+/// otherwise a safe call would be a heap out-of-bounds read/write inside MKL.
+fn check_gemm_dims(
+    layout: Layout,
+    transa: Transpose,
+    transb: Transpose,
+    m: i32,
+    n: i32,
+    k: i32,
+    a_len: usize,
+    lda: i32,
+    b_len: usize,
+    ldb: i32,
+    c_len: usize,
+    ldc: i32,
+) -> Result<()> {
+    if m < 0 || n < 0 || k < 0 {
+        return Err(Error::invalid("blas: m, n and k must be non-negative"));
+    }
+    let (a_rows, a_cols) = match transa {
+        Transpose::NoTrans => (m, k),
+        Transpose::Trans | Transpose::ConjTrans => (k, m),
+    };
+    let (b_rows, b_cols) = match transb {
+        Transpose::NoTrans => (k, n),
+        Transpose::Trans | Transpose::ConjTrans => (n, k),
+    };
+    check_matrix(layout, a_rows, a_cols, lda, a_len, "a", "lda")?;
+    check_matrix(layout, b_rows, b_cols, ldb, b_len, "b", "ldb")?;
+    check_matrix(layout, m, n, ldc, c_len, "c", "ldc")?;
+    Ok(())
+}
+
+/// Validate one `rows × cols` operand with leading dimension `ld`.
+fn check_matrix(
+    layout: Layout,
+    rows: i32,
+    cols: i32,
+    ld: i32,
+    len: usize,
+    name: &str,
+    ld_name: &str,
+) -> Result<()> {
+    if rows == 0 || cols == 0 {
+        return Ok(());
+    }
+    let min_ld = match layout {
+        Layout::RowMajor => cols,
+        Layout::ColMajor => rows,
+    };
+    if ld < min_ld {
+        return Err(Error::invalid(format!("blas: {ld_name} < {min_ld}")));
+    }
+    let min_len = match layout {
+        Layout::RowMajor => (rows - 1) as usize * ld as usize + cols as usize,
+        Layout::ColMajor => (cols - 1) as usize * ld as usize + rows as usize,
+    };
+    if len < min_len {
+        return Err(Error::invalid(format!("blas: {name} too short")));
+    }
+    Ok(())
+}
+
+/// Validate a level-1 vector argument: `n` elements at stride `inc`.
+fn check_vector(n: i32, len: usize, inc: i32, name: &str) -> Result<()> {
+    if n < 0 {
+        return Err(Error::invalid(format!("blas: {name} count is negative")));
+    }
+    if n == 0 {
+        return Ok(());
+    }
+    if inc == 0 {
+        return Err(Error::invalid(format!("blas: {name} increment is zero")));
+    }
+    let required = 1 + (n - 1) as usize * inc.unsigned_abs() as usize;
+    if len < required {
+        return Err(Error::invalid(format!("blas: {name} too short")));
+    }
+    Ok(())
+}
+
 /// `C := alpha * op(A) * op(B) + beta * C`, single precision.
 ///
 /// `A` is `m × k` (or `k × m` when transposed), `B` is `k × n` (or `n × k`),
@@ -56,10 +144,11 @@ pub fn sgemm(
     c: &mut [f32],
     ldc: i32,
 ) -> Result<()> {
-    // SAFETY: soundness relies on the caller upholding the documented BLAS
-    // sizing contract (module header) — `a`/`b`/`c` must cover the
-    // transpose-adjusted `lda`/`ldb`/`ldc` elements `cblas_sgemm` reads/writes.
-    // This wrapper is a pass-through with no bounds checks, exactly like CBLAS.
+    check_gemm_dims(
+        layout, transa, transb, m, n, k, a.len(), lda, b.len(), ldb, c.len(), ldc,
+    )?;
+    // SAFETY: `a`, `b` and `c` cover the transpose-adjusted leading-dimension
+    // region `cblas_sgemm` reads/writes, as enforced by `check_gemm_dims` above.
     unsafe {
         nuvai_mkl_sys::cblas_sgemm(
             cblas_layout(layout),
@@ -99,9 +188,11 @@ pub fn dgemm(
     c: &mut [f64],
     ldc: i32,
 ) -> Result<()> {
-    // SAFETY: caller must size `a`/`b`/`c` per the BLAS convention (module
-    // header); `cblas_dgemm` reads/writes those transpose-adjusted leading-
-    // dimension elements via the forwarded raw pointers.
+    check_gemm_dims(
+        layout, transa, transb, m, n, k, a.len(), lda, b.len(), ldb, c.len(), ldc,
+    )?;
+    // SAFETY: `a`, `b` and `c` cover the transpose-adjusted leading-dimension
+    // region `cblas_dgemm` reads/writes, as enforced by `check_gemm_dims` above.
     unsafe {
         nuvai_mkl_sys::cblas_dgemm(
             cblas_layout(layout),
@@ -125,8 +216,11 @@ pub fn dgemm(
 
 /// `y := alpha * x + y`, single precision.
 pub fn saxpy(n: i32, alpha: f32, x: &[f32], incx: i32, y: &mut [f32], incy: i32) -> Result<()> {
-    // SAFETY: caller must size `x`/`y` to `n` elements at strides `incx`/`incy`
-    // per the BLAS convention (module header); `cblas_saxpy` reads/writes them.
+    check_vector(n, x.len(), incx, "x")?;
+    check_vector(n, y.len(), incy, "y")?;
+    // SAFETY: `x` and `y` hold `n` elements at strides `incx`/`incy`, as
+    // enforced by `check_vector` above; `cblas_saxpy` reads `x`, reads/writes
+    // `y`.
     unsafe {
         nuvai_mkl_sys::cblas_saxpy(n, alpha, x.as_ptr(), incx, y.as_mut_ptr(), incy);
     }
@@ -135,8 +229,11 @@ pub fn saxpy(n: i32, alpha: f32, x: &[f32], incx: i32, y: &mut [f32], incy: i32)
 
 /// `y := alpha * x + y`, double precision.
 pub fn daxpy(n: i32, alpha: f64, x: &[f64], incx: i32, y: &mut [f64], incy: i32) -> Result<()> {
-    // SAFETY: caller must size `x`/`y` to `n` elements at strides `incx`/`incy`
-    // per the BLAS convention (module header); `cblas_daxpy` reads/writes them.
+    check_vector(n, x.len(), incx, "x")?;
+    check_vector(n, y.len(), incy, "y")?;
+    // SAFETY: `x` and `y` hold `n` elements at strides `incx`/`incy`, as
+    // enforced by `check_vector` above; `cblas_daxpy` reads `x`, reads/writes
+    // `y`.
     unsafe {
         nuvai_mkl_sys::cblas_daxpy(n, alpha, x.as_ptr(), incx, y.as_mut_ptr(), incy);
     }
@@ -144,23 +241,28 @@ pub fn daxpy(n: i32, alpha: f64, x: &[f64], incx: i32, y: &mut [f64], incy: i32)
 }
 
 /// `dot := xᵀ · y`, single precision.
-pub fn sdot(n: i32, x: &[f32], incx: i32, y: &[f32], incy: i32) -> f32 {
-    // SAFETY: caller must size `x`/`y` to `n` elements at strides `incx`/`incy`
-    // per the BLAS convention; `cblas_sdot` only reads them.
-    unsafe { nuvai_mkl_sys::cblas_sdot(n, x.as_ptr(), incx, y.as_ptr(), incy) }
+pub fn sdot(n: i32, x: &[f32], incx: i32, y: &[f32], incy: i32) -> Result<f32> {
+    check_vector(n, x.len(), incx, "x")?;
+    check_vector(n, y.len(), incy, "y")?;
+    // SAFETY: `x` and `y` hold `n` elements at strides `incx`/`incy`, as
+    // enforced by `check_vector` above; `cblas_sdot` only reads them.
+    Ok(unsafe { nuvai_mkl_sys::cblas_sdot(n, x.as_ptr(), incx, y.as_ptr(), incy) })
 }
 
 /// `dot := xᵀ · y`, double precision.
-pub fn ddot(n: i32, x: &[f64], incx: i32, y: &[f64], incy: i32) -> f64 {
-    // SAFETY: caller must size `x`/`y` to `n` elements at strides `incx`/`incy`
-    // per the BLAS convention; `cblas_ddot` only reads them.
-    unsafe { nuvai_mkl_sys::cblas_ddot(n, x.as_ptr(), incx, y.as_ptr(), incy) }
+pub fn ddot(n: i32, x: &[f64], incx: i32, y: &[f64], incy: i32) -> Result<f64> {
+    check_vector(n, x.len(), incx, "x")?;
+    check_vector(n, y.len(), incy, "y")?;
+    // SAFETY: `x` and `y` hold `n` elements at strides `incx`/`incy`, as
+    // enforced by `check_vector` above; `cblas_ddot` only reads them.
+    Ok(unsafe { nuvai_mkl_sys::cblas_ddot(n, x.as_ptr(), incx, y.as_ptr(), incy) })
 }
 
 /// `x := alpha * x`, single precision.
 pub fn sscal(n: i32, alpha: f32, x: &mut [f32], incx: i32) -> Result<()> {
-    // SAFETY: caller must size `x` to `n` elements at stride `incx` per the
-    // BLAS convention (module header); `cblas_sscal` writes them.
+    check_vector(n, x.len(), incx, "x")?;
+    // SAFETY: `x` holds `n` elements at stride `incx`, as enforced by
+    // `check_vector` above; `cblas_sscal` writes them.
     unsafe {
         nuvai_mkl_sys::cblas_sscal(n, alpha, x.as_mut_ptr(), incx);
     }
@@ -169,8 +271,9 @@ pub fn sscal(n: i32, alpha: f32, x: &mut [f32], incx: i32) -> Result<()> {
 
 /// `x := alpha * x`, double precision.
 pub fn dscal(n: i32, alpha: f64, x: &mut [f64], incx: i32) -> Result<()> {
-    // SAFETY: caller must size `x` to `n` elements at stride `incx` per the
-    // BLAS convention (module header); `cblas_dscal` writes them.
+    check_vector(n, x.len(), incx, "x")?;
+    // SAFETY: `x` holds `n` elements at stride `incx`, as enforced by
+    // `check_vector` above; `cblas_dscal` writes them.
     unsafe {
         nuvai_mkl_sys::cblas_dscal(n, alpha, x.as_mut_ptr(), incx);
     }

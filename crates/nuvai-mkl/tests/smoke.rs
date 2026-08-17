@@ -308,6 +308,28 @@ fn pardiso_solve_3x3() {
     assert_close64(&x, &[1.0, 2.0, 3.0], 1e-9);
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn pardiso_reuses_factorization_on_aarch64() {
+    // Same nonsymmetric matrix as `pardiso_solve_3x3`, solved twice with two
+    // different right-hand sides. The second `solve` must reuse the cached QR
+    // factorization (`b` is not part of the cache key) and still return the
+    // correct solution.
+    let ia = [1i32, 3, 6, 8];
+    let ja = [1i32, 2, 1, 2, 3, 2, 3];
+    let a = [2.0f64, 1.0, 1.0, 3.0, 1.0, 1.0, 2.0];
+
+    let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+
+    let x1 = solver.solve(&ia, &ja, &a, &[4.0f64, 10.0, 8.0]).unwrap();
+    assert_close64(&x1, &[1.0, 2.0, 3.0], 1e-9);
+
+    // A·[3,1,2]ᵀ = [7,8,5]ᵀ — a distinct RHS that must not invalidate the
+    // cached factorization.
+    let x2 = solver.solve(&ia, &ja, &a, &[7.0f64, 8.0, 5.0]).unwrap();
+    assert_close64(&x2, &[3.0, 1.0, 2.0], 1e-9);
+}
+
 #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn dss_solve_2x2() {

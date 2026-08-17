@@ -42,10 +42,13 @@ pub mod mtype {
 /// A PARDISO solver handle (double precision).
 ///
 /// On Intel targets this holds the PARDISO `pt`/`iparm` state. On Apple
-/// Silicon the Accelerate backend performs a self-contained factor+solve per
-/// call and keeps only the caller's `mtype`, so the 768-byte PARDISO state is
-/// cfg'd out. On `aarch64-unknown-linux-gnu` there is no PARDISO backend and
-/// the handle is inert (every `solve` returns [`ErrorKind::Unsupported`]).
+/// Silicon the Accelerate backend caches the QR factorization of the most
+/// recently solved matrix and reuses it when the matrix is unchanged, so only
+/// `mtype` and that cache are kept — the 768-byte PARDISO state is cfg'd out.
+/// Holding the raw-pointer factorization makes the Apple Silicon handle
+/// `!Send + !Sync`, matching the Intel backend. On
+/// `aarch64-unknown-linux-gnu` there is no PARDISO backend and the handle is
+/// inert (every `solve` returns [`ErrorKind::Unsupported`]).
 pub struct Pardiso {
     /// PARDISO internal state (Intel targets only).
     #[cfg(not(target_arch = "aarch64"))]
@@ -63,6 +66,28 @@ pub struct Pardiso {
     /// True once the analysis phase has run (Intel targets only).
     #[cfg(not(target_arch = "aarch64"))]
     analyzed: bool,
+    /// Cached QR factorization plus the CSR matrix that produced it (Apple
+    /// Silicon only). Reused across `solve` calls when the matrix is unchanged.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    cached: Option<CachedFactor>,
+}
+
+/// A cached Accelerate QR factorization and the CSR matrix that produced it
+/// (Apple Silicon only).
+///
+/// [`SparseOpaqueFactorization_Double`] is `#[derive(Clone, Copy)]` for the
+/// struct-return ABI but owns heap memory through raw pointers, so it is stored
+/// here by value and moved — never `Copy`ed — to avoid aliasing the allocation
+/// and double-freeing it in `Drop`.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+struct CachedFactor {
+    /// The owned QR factorization (output of `_SparseFactorQR_Double`).
+    factor: nuvai_mkl_sys::SparseOpaqueFactorization_Double,
+    /// Copies of the caller's CSR input, compared with `==` to detect an
+    /// unchanged matrix and skip re-factoring.
+    ia: Vec<i32>,
+    ja: Vec<i32>,
+    a: Vec<f64>,
 }
 
 impl Pardiso {
@@ -87,11 +112,16 @@ impl Pardiso {
                 analyzed: false,
             }
         }
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            // On the aarch64 fallbacks the handle carries only `mtype`: the
-            // Accelerate backend factors+solves per call, and linux-aarch64 has
-            // no PARDISO backend (every `solve` returns Unsupported).
+            // The Accelerate backend starts with no cached factorization; it is
+            // populated on the first `solve` and reused for unchanged matrices.
+            Self { mtype, cached: None }
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // linux-aarch64 has no PARDISO backend (every `solve` returns
+            // Unsupported), so the handle carries only `mtype`.
             Self { mtype }
         }
     }
@@ -219,8 +249,12 @@ impl Pardiso {
 ///
 /// Converts the caller's 1-based CSR input to a 0-based CSC
 /// `SparseMatrix_Double`, factors it with QR (`_SparseFactorQR_Double`), and
-/// solves with `_SparseSolveOpaque_Double`. The factorization is local and
-/// destroyed before returning; the matrix buffers stay alive for the call.
+/// solves with `_SparseSolveOpaque_Double`. The factorization is cached in
+/// `self.cached` and reused across `solve` calls when the CSR triple is
+/// unchanged; `b` is deliberately absent from the cache key, so a new
+/// right-hand side re-solves against the retained factor. Apple's factor
+/// routines copy the matrix into the factorization's own storage, so the local
+/// CSC buffers can be dropped after factoring.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl Pardiso {
     fn solve_accelerate(&mut self, ia: &[i32], ja: &[i32], a: &[f64], b: &[f64]) -> Result<Vec<f64>> {
@@ -243,48 +277,75 @@ impl Pardiso {
             return Err(Error::invalid("PARDISO: bad ia/b lengths"));
         }
 
-        let (col_starts, row_indices, values) = csr_to_csc(n as usize, ia, ja, a, 1, false)?;
+        // Reuse the cached factorization when the matrix is unchanged (exact
+        // `==` on the CSR triple). `b` is deliberately absent from the key, so
+        // a new right-hand side re-solves against the retained factor.
+        let cache_hit = self
+            .cached
+            .as_ref()
+            .is_some_and(|c| c.ia.as_slice() == ia && c.ja.as_slice() == ja && c.a.as_slice() == a);
 
-        let matrix = nuvai_mkl_sys::SparseMatrix_Double {
-            structure: nuvai_mkl_sys::SparseMatrixStructure {
-                rowCount: n,
-                columnCount: n,
-                columnStarts: col_starts.as_ptr() as *mut c_long,
-                rowIndices: row_indices.as_ptr() as *mut i32,
-                attributes: nuvai_mkl_sys::SparseAttributes_t::ordinary(),
-                blockSize: 1,
-            },
-            data: values.as_ptr() as *mut f64,
-        };
+        if !cache_hit {
+            let (col_starts, row_indices, values) = csr_to_csc(n as usize, ia, ja, a, 1, false)?;
 
-        let sfoptions = default_symbolic_options();
-        let nfoptions = default_numeric_options();
+            let matrix = nuvai_mkl_sys::SparseMatrix_Double {
+                structure: nuvai_mkl_sys::SparseMatrixStructure {
+                    rowCount: n,
+                    columnCount: n,
+                    columnStarts: col_starts.as_ptr() as *mut c_long,
+                    rowIndices: row_indices.as_ptr() as *mut i32,
+                    attributes: nuvai_mkl_sys::SparseAttributes_t::ordinary(),
+                    blockSize: 1,
+                },
+                data: values.as_ptr() as *mut f64,
+            };
 
-        // SAFETY: `matrix` borrows the CSC arrays for the duration of the call;
-        // `SparseFactorizationQR` and the option structs are valid. The returned
-        // `SparseOpaqueFactorization_Double` is owned by value and freed once
-        // below.
-        let mut factor = unsafe {
-            nuvai_mkl_sys::_SparseFactorQR_Double(
-                nuvai_mkl_sys::SparseFactorizationQR,
-                &matrix,
-                &sfoptions,
-                &nfoptions,
-            )
-        };
-        if factor.status != nuvai_mkl_sys::SparseStatusOK {
-            let status = factor.status;
-            // SAFETY: `factor` is an owned, initialized factorization; released
-            // exactly once on the error path.
-            unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
-            return Err(Error::mkl(status, "_SparseFactorQR_Double"));
+            let sfoptions = default_symbolic_options();
+            let nfoptions = default_numeric_options();
+
+            // SAFETY: `matrix` borrows the CSC arrays for the duration of the
+            // call; `SparseFactorizationQR` and the option structs are valid.
+            // The returned `SparseOpaqueFactorization_Double` is owned by value
+            // and stored in `self.cached` (released exactly once by `Drop`, or
+            // when a later, different matrix replaces it).
+            let mut factor = unsafe {
+                nuvai_mkl_sys::_SparseFactorQR_Double(
+                    nuvai_mkl_sys::SparseFactorizationQR,
+                    &matrix,
+                    &sfoptions,
+                    &nfoptions,
+                )
+            };
+            if factor.status != nuvai_mkl_sys::SparseStatusOK {
+                let status = factor.status;
+                // SAFETY: `factor` is an owned, initialized factorization;
+                // released exactly once on this error path (it was never cached).
+                unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
+                return Err(Error::mkl(status, "_SparseFactorQR_Double"));
+            }
+
+            // Replace any previous cache entry: destroy the old factor exactly
+            // once, then store the fresh one together with copies of the CSR
+            // input it was factored from.
+            if let Some(old) = self.cached.take() {
+                let mut old_factor = old.factor;
+                // SAFETY: `old_factor` is an owned, initialized factorization
+                // that is no longer needed; moved out by value (never `Copy`ed)
+                // and destroyed exactly once here.
+                unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut old_factor) };
+            }
+            self.cached = Some(CachedFactor {
+                factor,
+                ia: ia.to_vec(),
+                ja: ja.to_vec(),
+                a: a.to_vec(),
+            });
         }
 
-        let result = solve_with_factor(&factor, n, b);
-        // SAFETY: `factor` is an owned, initialized factorization; released
-        // exactly once here after the solve.
-        unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
-        let x = result?;
+        // `self.cached` is `Some` here: either this was a cache hit, or the
+        // branch above just populated it.
+        let factor = &self.cached.as_ref().expect("factorization cached").factor;
+        let x = solve_with_factor(factor, n, b)?;
 
         // QR factorization of a singular matrix still succeeds (R is simply
         // rank-deficient), so Accelerate reports no error and the solve returns a
@@ -515,11 +576,22 @@ pub(crate) fn default_numeric_options() -> nuvai_mkl_sys::SparseNumericFactorOpt
 
 impl Drop for Pardiso {
     fn drop(&mut self) {
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            // Nothing to release on the aarch64 fallbacks: the Accelerate
-            // backend creates and destroys its QR factorization inside
-            // `solve_accelerate`, and linux-aarch64 has no PARDISO backend.
+            // Release the cached QR factorization exactly once. It is moved out
+            // by value (`take` into a local) so the raw-pointer payload is
+            // never `Copy`ed/aliased.
+            if let Some(cached) = self.cached.take() {
+                let mut factor = cached.factor;
+                // SAFETY: `factor` is an owned, initialized factorization
+                // created by `_SparseFactorQR_Double`; destroyed exactly once.
+                unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
+            }
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            // Nothing to release on aarch64-unknown-linux-gnu: no PARDISO
+            // backend, so a `Pardiso` can never hold a factorization there.
         }
         #[cfg(not(target_arch = "aarch64"))]
         {

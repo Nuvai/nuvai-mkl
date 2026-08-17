@@ -154,6 +154,56 @@ fn fft_roundtrip_c64() {
 
 #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
+fn fft_roundtrip_c32_len2() {
+    // 2 is the smallest split-complex fallback length (the interleaved family
+    // needs n >= 2, i.e. length >= 8). The impulse δ = [1,0] DFTs to all-ones
+    // and its inverse recovers it.
+    let plan = fft::FftPlan::new_c32(2).unwrap();
+    let input = [
+        MKL_Complex8 { real: 1.0, imag: 0.0 },
+        MKL_Complex8 { real: 0.0, imag: 0.0 },
+    ];
+    let mut freq = [MKL_Complex8 { real: 0.0, imag: 0.0 }; 2];
+    plan.forward_c32(&input, &mut freq).unwrap();
+    for f in &freq {
+        assert!((f.real - 1.0).abs() <= 1e-5, "real = {}", f.real);
+        assert!(f.imag.abs() <= 1e-5, "imag = {}", f.imag);
+    }
+
+    let mut out = [MKL_Complex8 { real: 0.0, imag: 0.0 }; 2];
+    plan.backward_c32(&freq, &mut out).unwrap();
+    assert!((out[0].real - 1.0).abs() <= 1e-5, "out[0] = {}", out[0].real);
+    for o in &out[1..] {
+        assert!(o.real.abs() <= 1e-5 && o.imag.abs() <= 1e-5);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn fft_roundtrip_c64_len2() {
+    // Double-precision analogue of `fft_roundtrip_c32_len2`.
+    let plan = fft::FftPlan::new_c64(2).unwrap();
+    let input = [
+        MKL_Complex16 { real: 1.0, imag: 0.0 },
+        MKL_Complex16 { real: 0.0, imag: 0.0 },
+    ];
+    let mut freq = [MKL_Complex16 { real: 0.0, imag: 0.0 }; 2];
+    plan.forward_c64(&input, &mut freq).unwrap();
+    for f in &freq {
+        assert!((f.real - 1.0).abs() <= 1e-9, "real = {}", f.real);
+        assert!(f.imag.abs() <= 1e-9, "imag = {}", f.imag);
+    }
+
+    let mut out = [MKL_Complex16 { real: 0.0, imag: 0.0 }; 2];
+    plan.backward_c64(&freq, &mut out).unwrap();
+    assert!((out[0].real - 1.0).abs() <= 1e-9, "out[0] = {}", out[0].real);
+    for o in &out[1..] {
+        assert!(o.real.abs() <= 1e-9 && o.imag.abs() <= 1e-9);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
 fn fft_roundtrip_c32_non_pow2() {
     // 24 = 3·2^3 is not a power of two, so this exercises the non-power-of-two
     // path (DFTI on Intel; vDSP's interleaved `f·2^n` family on aarch64). As for
@@ -405,6 +455,21 @@ fn vsl_uniform_rejects_empty_range() {
     assert!(stream.uniform64(2.0, 1.0, &mut out64).is_err());
     assert!(stream.uniform64(f64::NAN, 1.0, &mut out64).is_err());
     assert!(stream.uniform64(0.0, f64::NAN, &mut out64).is_err());
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn vsl_uniform_rejects_nonfinite_span_on_aarch64() {
+    // `a < b` holds for `MIN..MAX`, but the span `b - a` overflows to infinity,
+    // which `rand`'s `Uniform::new` rejects. The aarch64 backend must surface
+    // that as an error (matching Intel VSL) rather than panicking on the old
+    // `.expect("a < b was validated above")`.
+    let stream = vsl::Stream::new(11).unwrap();
+    let mut out = [0.0f32; 4];
+    assert!(stream.uniform(f32::MIN, f32::MAX, &mut out).is_err());
+
+    let mut out64 = [0.0f64; 4];
+    assert!(stream.uniform64(f64::MIN, f64::MAX, &mut out64).is_err());
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

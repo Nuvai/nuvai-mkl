@@ -25,6 +25,7 @@ use std::os::raw::c_long;
     not(target_arch = "aarch64")
 ))]
 use std::ptr;
+use std::marker::PhantomData;
 
 use crate::error::{Error, Result};
 
@@ -45,10 +46,12 @@ pub mod mtype {
 /// Silicon the Accelerate backend caches the QR factorization of the most
 /// recently solved matrix and reuses it when the matrix is unchanged, so only
 /// `mtype` and that cache are kept — the 768-byte PARDISO state is cfg'd out.
-/// Holding the raw-pointer factorization makes the Apple Silicon handle
-/// `!Send + !Sync`, matching the Intel backend. On
-/// `aarch64-unknown-linux-gnu` there is no PARDISO backend and the handle is
-/// inert (every `solve` returns [`ErrorKind::Unsupported`]).
+/// The handle is `!Send + !Sync` on every backend (Intel's raw `pt` pointers,
+/// the Apple Silicon factor's raw pointers, and an explicit raw-pointer
+/// `PhantomData` on the inert linux-aarch64 handle), so share it behind a lock
+/// for cross-thread use. On `aarch64-unknown-linux-gnu` there is no PARDISO
+/// backend and the handle is inert (every `solve` returns
+/// [`ErrorKind::Unsupported`]).
 pub struct Pardiso {
     /// PARDISO internal state (Intel targets only).
     #[cfg(not(target_arch = "aarch64"))]
@@ -70,6 +73,12 @@ pub struct Pardiso {
     /// Silicon only). Reused across `solve` calls when the matrix is unchanged.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     cached: Option<CachedFactor>,
+    /// Pin auto-trait parity across backends (see `vsl::Stream`'s identical
+    /// field). Intel's raw `pt` pointers and the Apple Silicon cached
+    /// factorization are `!Send + !Sync`; a raw-pointer `PhantomData` is also
+    /// `!Send + !Sync`, so the inert linux-aarch64 handle matches instead of
+    /// leaking `Send + Sync` on only one platform.
+    _not_send_sync: PhantomData<*const ()>,
 }
 
 /// A cached Accelerate QR factorization and the CSR matrix that produced it
@@ -110,19 +119,27 @@ impl Pardiso {
                 iparm,
                 n: 0,
                 analyzed: false,
+                _not_send_sync: PhantomData,
             }
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             // The Accelerate backend starts with no cached factorization; it is
             // populated on the first `solve` and reused for unchanged matrices.
-            Self { mtype, cached: None }
+            Self {
+                mtype,
+                cached: None,
+                _not_send_sync: PhantomData,
+            }
         }
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         {
             // linux-aarch64 has no PARDISO backend (every `solve` returns
             // Unsupported), so the handle carries only `mtype`.
-            Self { mtype }
+            Self {
+                mtype,
+                _not_send_sync: PhantomData,
+            }
         }
     }
 
@@ -279,7 +296,10 @@ impl Pardiso {
 
         // Reuse the cached factorization when the matrix is unchanged (exact
         // `==` on the CSR triple). `b` is deliberately absent from the key, so
-        // a new right-hand side re-solves against the retained factor.
+        // a new right-hand side re-solves against the retained factor. This key
+        // comparison is O(nnz) per solve — inherent to safe reuse, since the
+        // factor can only be trusted after the matrix is verified — and it
+        // short-circuits on `ia` (length n+1) before touching `ja`/`a`.
         let cache_hit = self
             .cached
             .as_ref()
@@ -343,9 +363,14 @@ impl Pardiso {
         }
 
         // `self.cached` is `Some` here: either this was a cache hit, or the
-        // branch above just populated it.
-        let factor = &self.cached.as_ref().expect("factorization cached").factor;
-        let x = solve_with_factor(factor, n, b)?;
+        // branch above just populated it. The `ok_or_else` fallback is
+        // unreachable (both paths populate the cache), but returning an error
+        // keeps the no-panic guarantee rather than asserting an invariant the
+        // compiler cannot prove.
+        let cached = self.cached.as_ref().ok_or_else(|| {
+            Error::invalid("PARDISO: factorization cache missing after factor/populate")
+        })?;
+        let x = solve_with_factor(&cached.factor, n, b)?;
 
         // QR factorization of a singular matrix still succeeds (R is simply
         // rank-deficient), so Accelerate reports no error and the solve returns a
@@ -353,6 +378,25 @@ impl Pardiso {
         // singular systems error out like Intel PARDISO's zero-pivot failure.
         check_residual(ia, ja, a, b, &x)?;
         Ok(x)
+    }
+
+    /// Release the cached QR factorization and its matrix copies without
+    /// dropping the handle.
+    ///
+    /// The cache retains the factor plus full copies of the caller's CSR input
+    /// (`ia`/`ja`/`a`) for the handle's lifetime so repeated solves with an
+    /// unchanged matrix skip re-factoring — roughly 2–3× the matrix's `nnz`
+    /// storage on top of Accelerate's own factor copy. Call this to release
+    /// that memory (e.g. after a one-off solve, or before a long idle period);
+    /// the next [`Pardiso::solve`] re-factors from scratch.
+    pub fn reset(&mut self) {
+        if let Some(cached) = self.cached.take() {
+            let mut factor = cached.factor;
+            // SAFETY: `factor` is an owned, initialized factorization created by
+            // `_SparseFactorQR_Double`; destroyed exactly once here (the same
+            // release `Drop` performs).
+            unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
+        }
     }
 }
 

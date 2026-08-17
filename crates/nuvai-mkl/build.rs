@@ -39,7 +39,17 @@ fn main() {
                 println!("cargo:rustc-link-arg=-Wl,-rpath,{root}/lib");
             }
         }
-        ("macos", "aarch64") => {}
+        ("macos", "aarch64") => {
+            // The Accelerate interleaved vDSP DFT (`vDSP_DFT_Interleaved_*`) used
+            // by the FFT backend is API_AVAILABLE(macos(12.0)); rustc defaults
+            // the aarch64-apple-darwin deployment target to 11.0, which would
+            // strong-link those symbols and abort at load time on macOS 10.15/11
+            // with "Symbol not found". Pin the minimum so nuvai-mkl's own
+            // test/example/bench binaries load only on macOS 12.0+. Downstream
+            // binaries must set MACOSX_DEPLOYMENT_TARGET=12.0 themselves — a
+            // library build script cannot force the final link's min OS.
+            println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=12.0");
+        }
         // Intel x86_64 Linux: keep libm in the final link (conda's
         // `libmkl_core.so.3` references `log`/`exp`/`sin`/… without a
         // DT_NEEDED) and add the runtime rpath to the conda MKL shared objects.

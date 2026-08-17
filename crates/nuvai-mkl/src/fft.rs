@@ -103,16 +103,31 @@ impl FftPlan {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let length = len as nuvai_mkl_sys::vDSP_Length;
-            // Prefer the interleaved family (no split/reinterleave copy); fall
-            // back to split-complex for the lengths interleaved cannot plan
-            // (2 and 4). vDSP reports an unsupported length as a null setup, so
-            // probing the setup is the source of truth for the length predicate
-            // rather than re-deriving the `f·2^n` factorization here.
-            let backend = Self::create_interleaved(length, single)
-                .or_else(|| Self::create_split(length, single));
-            let Some(backend) = backend else {
+            // Select the family deterministically from vDSP's documented length
+            // rules (vDSP_DFT.h) instead of treating a null setup as
+            // "unsupported": a null can also mean out-of-memory, which must not
+            // be misread as Unsupported nor silently downgraded to the slower
+            // split family. The interleaved family plans `f·2^n` for
+            // `f ∈ {2, 3, 5, 9, 15, 25}` with `n >= 2` (minimum 8); only
+            // lengths 2 and 4 fall back to the split family.
+            let backend = if interleaved_supports(len) {
+                Self::create_interleaved(length, single).ok_or_else(|| {
+                    Error::unsupported(format!(
+                        "FFT length {len} is supported by vDSP's interleaved DFT \
+                         but the setup could not be created (out of memory?)"
+                    ))
+                })?
+            } else if len == 2 || len == 4 {
+                Self::create_split(length, single).ok_or_else(|| {
+                    Error::unsupported(format!(
+                        "FFT length {len} is supported by vDSP's split DFT \
+                         but the setup could not be created (out of memory?)"
+                    ))
+                })?
+            } else {
                 return Err(Error::unsupported(format!(
-                    "FFT length {len} is not supported by vDSP (supported: 2, 4, and f·2^n for f in {{2, 3, 5, 9, 15, 25}} with n >= 2)"
+                    "FFT length {len} is not supported by vDSP (supported: 2, 4, \
+                     and f·2^n for f in {{2, 3, 5, 9, 15, 25}} with n >= 2)"
                 )));
             };
             Ok(Self {
@@ -340,6 +355,29 @@ impl FftPlan {
 /// [`nuvai_mkl_sys::vDSP_DFT_Execute`], and re-interleaves. Both families'
 /// inverse DFTs are unnormalized, so the `1/n` backward scale is applied
 /// explicitly to match the DFTI contract on Intel.
+///
+/// Whether `len` is planable by vDSP's interleaved-complex DFT: `len = f·2^n`
+/// for `f ∈ {2, 3, 5, 9, 15, 25}` and `n >= 2` (vDSP_DFT.h). Used to select the
+/// family deterministically so a null setup on a supported length is reported as
+/// a setup failure (out of memory) rather than misread as an unsupported length.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn interleaved_supports(len: usize) -> bool {
+    // Minimum interleaved length is f_min · 2^2 = 2 · 4 = 8.
+    if len < 8 {
+        return false;
+    }
+    // `len = f · 2^n` with `n >= 2` iff `len / f` is a power of two `>= 4`.
+    for f in [2usize, 3, 5, 9, 15, 25] {
+        if len.is_multiple_of(f) {
+            let m = len / f;
+            if m.is_power_of_two() && m >= 4 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl FftPlan {
     /// Try to plan the interleaved-complex family. Returns `None` when the

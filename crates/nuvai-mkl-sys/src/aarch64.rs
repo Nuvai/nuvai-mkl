@@ -57,10 +57,10 @@ pub type vDSP_DFT_Interleaved_Setup = *mut c_void;
 pub type vDSP_DFT_Interleaved_SetupD = *mut c_void;
 
 /// Real-to-complex flag for the interleaved DFT (`vDSP_ENUM(bool,
-/// vDSP_DFT_RealtoComplex)`). Declared `c_int` for ABI uniformity with the
-/// other vDSP enum args; only `0`/`1` is ever passed, so the callee's `_Bool`
-/// read is correct.
-pub type vDSP_DFT_RealtoComplex = c_int;
+/// vDSP_DFT_RealtoComplex)`). The C enum's underlying type is `_Bool` (1 byte),
+/// so it is declared `u8` — not `c_int` (4 bytes) — to match the callee's ABI
+/// register width on ARM64. Only `0`/`1` is ever passed.
+pub type vDSP_DFT_RealtoComplex = u8;
 pub const vDSP_DFT_Interleaved_ComplextoComplex: vDSP_DFT_RealtoComplex = 0;
 pub const vDSP_DFT_Interleaved_RealtoComplex: vDSP_DFT_RealtoComplex = 1;
 

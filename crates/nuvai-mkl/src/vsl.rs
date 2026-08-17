@@ -121,7 +121,14 @@ impl Stream {
             // single `Uniform` and fill the slice in one `sample_iter` pass.
             // RNG consumption order is unchanged (one draw per element), so a
             // fixed seed stays deterministic.
-            let distr = Uniform::new(a, b).expect("a < b was validated above");
+            //
+            // `Uniform::new` also rejects ranges whose span `b - a` overflows
+            // to infinity (e.g. `MIN..MAX`), which the `a < b` guard above does
+            // not catch. Surface that as an error so the aarch64 backend
+            // matches Intel VSL's error behaviour instead of panicking.
+            let distr = Uniform::new(a, b).map_err(|e| {
+                Error::invalid(format!("invalid uniform range [{a}, {b}): {e}"))
+            })?;
             let mut rng = self.state.borrow_mut();
             for (v, s) in out.iter_mut().zip(distr.sample_iter(&mut *rng)) {
                 *v = s;
@@ -173,7 +180,14 @@ impl Stream {
             // single `Uniform` and fill the slice in one `sample_iter` pass.
             // RNG consumption order is unchanged (one draw per element), so a
             // fixed seed stays deterministic.
-            let distr = Uniform::new(a, b).expect("a < b was validated above");
+            //
+            // `Uniform::new` also rejects ranges whose span `b - a` overflows
+            // to infinity (e.g. `MIN..MAX`), which the `a < b` guard above does
+            // not catch. Surface that as an error so the aarch64 backend
+            // matches Intel VSL's error behaviour instead of panicking.
+            let distr = Uniform::new(a, b).map_err(|e| {
+                Error::invalid(format!("invalid uniform range [{a}, {b}): {e}"))
+            })?;
             let mut rng = self.state.borrow_mut();
             for (v, s) in out.iter_mut().zip(distr.sample_iter(&mut *rng)) {
                 *v = s;

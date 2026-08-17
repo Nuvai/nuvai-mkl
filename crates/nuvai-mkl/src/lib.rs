@@ -29,6 +29,15 @@
 //! [`ErrorKind::Unsupported`]: error::ErrorKind::Unsupported
 
 #![allow(clippy::too_many_arguments)]
+// Every `unsafe` block below carries a `// SAFETY:` rationale, and the wrapper
+// defines no `unsafe fn`, so these lints are clean today and deny regressions:
+// a new `unsafe` block without a written justification, or an un-scoped `unsafe`
+// operation creeping into a future `unsafe fn`, fails the build instead of
+// passing review unnoticed.
+#![deny(unsafe_op_in_unsafe_fn)]
+// `undocumented_unsafe_blocks` is a Clippy restriction lint (there is no
+// rustc-level equivalent yet), so it is namespaced accordingly.
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 pub use nuvai_mkl_sys::MKL_VERSION;
 

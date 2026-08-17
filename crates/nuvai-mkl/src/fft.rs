@@ -29,16 +29,35 @@ type FftHandle = nuvai_mkl_sys::DFTI_DESCRIPTOR_HANDLE;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 struct FftHandle {
-    /// Forward DFT setup (`vDSP_DFT_zop_CreateSetup`, direction = FORWARD).
-    forward: nuvai_mkl_sys::vDSP_DFT_Setup,
-    /// Inverse DFT setup (`vDSP_DFT_zop_CreateSetup`, direction = INVERSE).
-    inverse: nuvai_mkl_sys::vDSP_DFT_Setup,
+    /// Which vDSP DFT family backs this plan.
+    backend: FftBackend,
     /// True for the single-precision (f32) variants; selects the `D` vDSP API.
     single: bool,
-    /// Reused split-complex scratch (`re`/`im`) for single-precision transforms.
-    scratch32: RefCell<Option<(Vec<f32>, Vec<f32>)>>,
-    /// Reused split-complex scratch for double-precision transforms.
-    scratch64: RefCell<Option<(Vec<f64>, Vec<f64>)>>,
+}
+
+/// The vDSP DFT family backing an aarch64 [`FftHandle`]. Interleaved-complex is
+/// preferred — it transforms the caller's `MKL_Complex*` buffer directly (no
+/// split/reinterleave copy) — but it can only plan lengths `f·2^n` for
+/// `f ∈ {2, 3, 5, 9, 15, 25}` with `n >= 2` (minimum 8) on macOS 12.0+. The
+/// split-complex family is the fallback for the two lengths below that (2 and
+/// 4), which need a deinterleave → execute → reinterleave round-trip through
+/// scratch arrays.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+enum FftBackend {
+    /// Interleaved-complex DFT (`vDSP_DFT_Interleaved_*`, macOS 12.0+).
+    Interleaved {
+        forward: nuvai_mkl_sys::vDSP_DFT_Interleaved_Setup,
+        inverse: nuvai_mkl_sys::vDSP_DFT_Interleaved_Setup,
+    },
+    /// Split-complex DFT (`vDSP_DFT_zop_*`, macOS 10.7+).
+    Split {
+        forward: nuvai_mkl_sys::vDSP_DFT_Setup,
+        inverse: nuvai_mkl_sys::vDSP_DFT_Setup,
+        /// Reused split-complex scratch (`re`/`im`) for single-precision transforms.
+        scratch32: RefCell<Option<(Vec<f32>, Vec<f32>)>>,
+        /// Reused split-complex scratch for double-precision transforms.
+        scratch64: RefCell<Option<(Vec<f64>, Vec<f64>)>>,
+    },
 }
 
 /// Uninhabited-in-practice handle on `aarch64-unknown-linux-gnu`: no FFT
@@ -84,75 +103,35 @@ impl FftPlan {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let length = len as nuvai_mkl_sys::vDSP_Length;
-            // SAFETY: `CreateSetup`/`CreateSetupD` take a `prev` setup (null
-            // here) and the positive `length` validated above, returning a new
-            // setup (or null on failure). Each returned handle is owned and
-            // released exactly once by `Drop`/the error path below.
-            let (forward, inverse) = unsafe {
-                let forward = if single {
-                    nuvai_mkl_sys::vDSP_DFT_zop_CreateSetup(
-                        std::ptr::null_mut(),
-                        length,
-                        nuvai_mkl_sys::vDSP_DFT_FORWARD,
-                    )
-                } else {
-                    nuvai_mkl_sys::vDSP_DFT_zop_CreateSetupD(
-                        std::ptr::null_mut(),
-                        length,
-                        nuvai_mkl_sys::vDSP_DFT_FORWARD,
-                    )
-                };
-                let inverse = if single {
-                    nuvai_mkl_sys::vDSP_DFT_zop_CreateSetup(
-                        std::ptr::null_mut(),
-                        length,
-                        nuvai_mkl_sys::vDSP_DFT_INVERSE,
-                    )
-                } else {
-                    nuvai_mkl_sys::vDSP_DFT_zop_CreateSetupD(
-                        std::ptr::null_mut(),
-                        length,
-                        nuvai_mkl_sys::vDSP_DFT_INVERSE,
-                    )
-                };
-                (forward, inverse)
-            };
-            if forward.is_null() || inverse.is_null() {
-                // Best-effort release of whatever half was allocated, using the
-                // precision-matched destroy routine (as Drop does) — a double
-                // setup released through the single-precision destroy leaks.
-                // SAFETY: `forward`/`inverse` are either null or a valid setup
-                // returned by the matching `CreateSetup`/`CreateSetupD` call
-                // above, and each non-null setup is destroyed exactly once.
-                unsafe {
-                    if single {
-                        if !forward.is_null() {
-                            nuvai_mkl_sys::vDSP_DFT_DestroySetup(forward);
-                        }
-                        if !inverse.is_null() {
-                            nuvai_mkl_sys::vDSP_DFT_DestroySetup(inverse);
-                        }
-                    } else {
-                        if !forward.is_null() {
-                            nuvai_mkl_sys::vDSP_DFT_DestroySetupD(forward);
-                        }
-                        if !inverse.is_null() {
-                            nuvai_mkl_sys::vDSP_DFT_DestroySetupD(inverse);
-                        }
-                    }
-                }
+            // Select the family deterministically from vDSP's documented length
+            // rules (vDSP_DFT.h) instead of treating a null setup as
+            // "unsupported": a null can also mean out-of-memory, which must not
+            // be misread as Unsupported nor silently downgraded to the slower
+            // split family. The interleaved family plans `f·2^n` for
+            // `f ∈ {2, 3, 5, 9, 15, 25}` with `n >= 2` (minimum 8); only
+            // lengths 2 and 4 fall back to the split family.
+            let backend = if interleaved_supports(len) {
+                Self::create_interleaved(length, single).ok_or_else(|| {
+                    Error::unsupported(format!(
+                        "FFT length {len} is supported by vDSP's interleaved DFT \
+                         but the setup could not be created (out of memory?)"
+                    ))
+                })?
+            } else if len == 2 || len == 4 {
+                Self::create_split(length, single).ok_or_else(|| {
+                    Error::unsupported(format!(
+                        "FFT length {len} is supported by vDSP's split DFT \
+                         but the setup could not be created (out of memory?)"
+                    ))
+                })?
+            } else {
                 return Err(Error::unsupported(format!(
-                    "FFT length {len} is not supported by vDSP (supported: powers of two, and f·2^n for f in {{3, 5, 15}} with n >= 3)"
+                    "FFT length {len} is not supported by vDSP (supported: 2, 4, \
+                     and f·2^n for f in {{2, 3, 5, 9, 15, 25}} with n >= 2)"
                 )));
-            }
+            };
             Ok(Self {
-                handle: FftHandle {
-                    forward,
-                    inverse,
-                    single,
-                    scratch32: RefCell::new(None),
-                    scratch64: RefCell::new(None),
-                },
+                handle: FftHandle { backend, single },
                 len,
             })
         }
@@ -368,68 +347,296 @@ impl FftPlan {
 
 /// Accelerate (`aarch64-apple-darwin`) FFT backend.
 ///
-/// vDSP operates on *split* complex (separate real/imag arrays), so each call
-/// deinterleaves the caller's `MKL_Complex*` buffer into split scratch arrays,
-/// runs [`nuvai_mkl_sys::vDSP_DFT_Execute`] in place, and re-interleaves the
-/// result. vDSP's inverse DFT is unnormalized, so the `1/n` backward scale is
-/// applied explicitly to match the DFTI contract on Intel.
+/// The plan prefers vDSP's interleaved-complex DFT (macOS 12.0+), which
+/// transforms the caller's `MKL_Complex*` buffer directly (layout-identical to
+/// `DSP*Complex`) with no split/reinterleave copy. For the two lengths that
+/// family cannot plan (2 and 4) it falls back to the split-complex DFT, which
+/// deinterleaves into `re`/`im` scratch arrays, runs
+/// [`nuvai_mkl_sys::vDSP_DFT_Execute`], and re-interleaves. Both families'
+/// inverse DFTs are unnormalized, so the `1/n` backward scale is applied
+/// explicitly to match the DFTI contract on Intel.
+///
+/// Whether `len` is planable by vDSP's interleaved-complex DFT: `len = f·2^n`
+/// for `f ∈ {2, 3, 5, 9, 15, 25}` and `n >= 2` (vDSP_DFT.h). Used to select the
+/// family deterministically so a null setup on a supported length is reported as
+/// a setup failure (out of memory) rather than misread as an unsupported length.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn interleaved_supports(len: usize) -> bool {
+    // Minimum interleaved length is f_min · 2^2 = 2 · 4 = 8.
+    if len < 8 {
+        return false;
+    }
+    // `len = f · 2^n` with `n >= 2` iff `len / f` is a power of two `>= 4`.
+    for f in [2usize, 3, 5, 9, 15, 25] {
+        if len.is_multiple_of(f) {
+            let m = len / f;
+            if m.is_power_of_two() && m >= 4 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl FftPlan {
+    /// Try to plan the interleaved-complex family. Returns `None` when the
+    /// length is unsupported (vDSP returns a null setup), signalling `create`
+    /// to fall back to the split family.
+    fn create_interleaved(
+        length: nuvai_mkl_sys::vDSP_Length,
+        single: bool,
+    ) -> Option<FftBackend> {
+        let complextocomplex = nuvai_mkl_sys::vDSP_DFT_Interleaved_ComplextoComplex;
+        // SAFETY: `CreateSetup`/`CreateSetupD` take a null `prev` setup and the
+        // positive `length`, returning a new setup (or null on failure). Each
+        // returned non-null handle is owned and released exactly once below or
+        // by `Drop`.
+        let (forward, inverse) = unsafe {
+            let forward = if single {
+                nuvai_mkl_sys::vDSP_DFT_Interleaved_CreateSetup(
+                    std::ptr::null_mut(),
+                    length,
+                    nuvai_mkl_sys::vDSP_DFT_FORWARD,
+                    complextocomplex,
+                )
+            } else {
+                nuvai_mkl_sys::vDSP_DFT_Interleaved_CreateSetupD(
+                    std::ptr::null_mut(),
+                    length,
+                    nuvai_mkl_sys::vDSP_DFT_FORWARD,
+                    complextocomplex,
+                )
+            };
+            let inverse = if single {
+                nuvai_mkl_sys::vDSP_DFT_Interleaved_CreateSetup(
+                    std::ptr::null_mut(),
+                    length,
+                    nuvai_mkl_sys::vDSP_DFT_INVERSE,
+                    complextocomplex,
+                )
+            } else {
+                nuvai_mkl_sys::vDSP_DFT_Interleaved_CreateSetupD(
+                    std::ptr::null_mut(),
+                    length,
+                    nuvai_mkl_sys::vDSP_DFT_INVERSE,
+                    complextocomplex,
+                )
+            };
+            (forward, inverse)
+        };
+        if forward.is_null() || inverse.is_null() {
+            // Best-effort release of whatever half was allocated, using the
+            // precision-matched destroy routine (as Drop does) — a double setup
+            // released through the single-precision destroy leaks.
+            // SAFETY: each pointer is null or a valid setup from the matching
+            // `CreateSetup`/`CreateSetupD` call above, destroyed exactly once.
+            unsafe {
+                if single {
+                    if !forward.is_null() {
+                        nuvai_mkl_sys::vDSP_DFT_Interleaved_DestroySetup(forward);
+                    }
+                    if !inverse.is_null() {
+                        nuvai_mkl_sys::vDSP_DFT_Interleaved_DestroySetup(inverse);
+                    }
+                } else {
+                    if !forward.is_null() {
+                        nuvai_mkl_sys::vDSP_DFT_Interleaved_DestroySetupD(forward);
+                    }
+                    if !inverse.is_null() {
+                        nuvai_mkl_sys::vDSP_DFT_Interleaved_DestroySetupD(inverse);
+                    }
+                }
+            }
+            return None;
+        }
+        Some(FftBackend::Interleaved { forward, inverse })
+    }
+
+    /// Plan the split-complex family (fallback for lengths 2 and 4). Returns
+    /// `None` when the length is unsupported.
+    fn create_split(length: nuvai_mkl_sys::vDSP_Length, single: bool) -> Option<FftBackend> {
+        // SAFETY: `CreateSetup`/`CreateSetupD` take a null `prev` setup and the
+        // positive `length`, returning a new setup (or null on failure). Each
+        // returned non-null handle is owned and released exactly once below or
+        // by `Drop`.
+        let (forward, inverse) = unsafe {
+            let forward = if single {
+                nuvai_mkl_sys::vDSP_DFT_zop_CreateSetup(
+                    std::ptr::null_mut(),
+                    length,
+                    nuvai_mkl_sys::vDSP_DFT_FORWARD,
+                )
+            } else {
+                nuvai_mkl_sys::vDSP_DFT_zop_CreateSetupD(
+                    std::ptr::null_mut(),
+                    length,
+                    nuvai_mkl_sys::vDSP_DFT_FORWARD,
+                )
+            };
+            let inverse = if single {
+                nuvai_mkl_sys::vDSP_DFT_zop_CreateSetup(
+                    std::ptr::null_mut(),
+                    length,
+                    nuvai_mkl_sys::vDSP_DFT_INVERSE,
+                )
+            } else {
+                nuvai_mkl_sys::vDSP_DFT_zop_CreateSetupD(
+                    std::ptr::null_mut(),
+                    length,
+                    nuvai_mkl_sys::vDSP_DFT_INVERSE,
+                )
+            };
+            (forward, inverse)
+        };
+        if forward.is_null() || inverse.is_null() {
+            // SAFETY: as `create_interleaved` — null or valid, destroyed once.
+            unsafe {
+                if single {
+                    if !forward.is_null() {
+                        nuvai_mkl_sys::vDSP_DFT_DestroySetup(forward);
+                    }
+                    if !inverse.is_null() {
+                        nuvai_mkl_sys::vDSP_DFT_DestroySetup(inverse);
+                    }
+                } else {
+                    if !forward.is_null() {
+                        nuvai_mkl_sys::vDSP_DFT_DestroySetupD(forward);
+                    }
+                    if !inverse.is_null() {
+                        nuvai_mkl_sys::vDSP_DFT_DestroySetupD(inverse);
+                    }
+                }
+            }
+            return None;
+        }
+        Some(FftBackend::Split {
+            forward,
+            inverse,
+            scratch32: RefCell::new(None),
+            scratch64: RefCell::new(None),
+        })
+    }
+
     fn transform_c32(&self, input: &[MKL_Complex8], output: &mut [MKL_Complex8], inverse: bool) {
         let n = self.len;
-        let mut scratch = self.handle.scratch32.borrow_mut();
-        let (re, im) = scratch.get_or_insert_with(|| (vec![0.0f32; n], vec![0.0f32; n]));
-        for (i, x) in input.iter().enumerate() {
-            re[i] = x.real;
-            im[i] = x.imag;
-        }
-        let setup = if inverse { self.handle.inverse } else { self.handle.forward };
-        // SAFETY: `setup` is the non-null forward/inverse setup from `create`;
-        // `re`/`im` are length-`n` scratch arrays and `vDSP_DFT_Execute` reads
-        // the first `n` elements of each and writes them back in place
-        // (split-complex out-of-place transform), which `re`/`im` are sized for.
-        unsafe {
-            nuvai_mkl_sys::vDSP_DFT_Execute(
-                setup,
-                re.as_ptr(),
-                im.as_ptr(),
-                re.as_mut_ptr(),
-                im.as_mut_ptr(),
-            );
-        }
-        let scale = if inverse { 1.0 / n as f32 } else { 1.0f32 };
-        for (i, y) in output.iter_mut().enumerate() {
-            y.real = re[i] * scale;
-            y.imag = im[i] * scale;
+        match &self.handle.backend {
+            FftBackend::Interleaved { forward, inverse: inv } => {
+                let setup = if inverse { *inv } else { *forward };
+                // `DSPComplex` is layout-identical to `MKL_Complex8` (both
+                // `#[repr(C)] { real: f32, imag: f32 }`), so the caller's
+                // interleaved buffers cast directly — no deinterleave copy.
+                // SAFETY: `setup` is non-null; the pointers describe `n`
+                // interleaved complex elements each, and the out-of-place
+                // interleaved DFT reads `input` and writes the distinct `output`.
+                unsafe {
+                    nuvai_mkl_sys::vDSP_DFT_Interleaved_Execute(
+                        setup,
+                        input.as_ptr() as *const nuvai_mkl_sys::DSPComplex,
+                        output.as_mut_ptr() as *mut nuvai_mkl_sys::DSPComplex,
+                    );
+                }
+                // Forward needs no scale; inverse applies the `1/n`
+                // normalization to match the DFTI contract on Intel.
+                if inverse {
+                    let scale = 1.0 / n as f32;
+                    for y in output.iter_mut() {
+                        y.real *= scale;
+                        y.imag *= scale;
+                    }
+                }
+            }
+            FftBackend::Split {
+                forward,
+                inverse: inv,
+                scratch32,
+                ..
+            } => {
+                let mut scratch = scratch32.borrow_mut();
+                let (re, im) = scratch.get_or_insert_with(|| (vec![0.0f32; n], vec![0.0f32; n]));
+                for (i, x) in input.iter().enumerate() {
+                    re[i] = x.real;
+                    im[i] = x.imag;
+                }
+                let setup = if inverse { *inv } else { *forward };
+                // SAFETY: `setup` is the non-null split setup; `re`/`im` are
+                // length-`n` scratch arrays and `vDSP_DFT_Execute` reads and
+                // writes exactly the first `n` split-complex elements.
+                unsafe {
+                    nuvai_mkl_sys::vDSP_DFT_Execute(
+                        setup,
+                        re.as_ptr(),
+                        im.as_ptr(),
+                        re.as_mut_ptr(),
+                        im.as_mut_ptr(),
+                    );
+                }
+                let scale = if inverse { 1.0 / n as f32 } else { 1.0f32 };
+                for (i, y) in output.iter_mut().enumerate() {
+                    y.real = re[i] * scale;
+                    y.imag = im[i] * scale;
+                }
+            }
         }
     }
 
     fn transform_c64(&self, input: &[MKL_Complex16], output: &mut [MKL_Complex16], inverse: bool) {
         let n = self.len;
-        let mut scratch = self.handle.scratch64.borrow_mut();
-        let (re, im) = scratch.get_or_insert_with(|| (vec![0.0f64; n], vec![0.0f64; n]));
-        for (i, x) in input.iter().enumerate() {
-            re[i] = x.real;
-            im[i] = x.imag;
-        }
-        let setup = if inverse { self.handle.inverse } else { self.handle.forward };
-        // SAFETY: `setup` is the non-null forward/inverse setup from `create`;
-        // `re`/`im` are length-`n` scratch arrays and `vDSP_DFT_ExecuteD` reads
-        // and writes exactly the first `n` split-complex elements, which the
-        // scratch arrays are sized for.
-        unsafe {
-            nuvai_mkl_sys::vDSP_DFT_ExecuteD(
-                setup,
-                re.as_ptr(),
-                im.as_ptr(),
-                re.as_mut_ptr(),
-                im.as_mut_ptr(),
-            );
-        }
-        let scale = if inverse { 1.0 / n as f64 } else { 1.0f64 };
-        for (i, y) in output.iter_mut().enumerate() {
-            y.real = re[i] * scale;
-            y.imag = im[i] * scale;
+        match &self.handle.backend {
+            FftBackend::Interleaved { forward, inverse: inv } => {
+                let setup = if inverse { *inv } else { *forward };
+                // `DSPDoubleComplex` is layout-identical to `MKL_Complex16`
+                // (both `#[repr(C)] { real: f64, imag: f64 }`), so the caller's
+                // interleaved buffers cast directly — no deinterleave copy.
+                // SAFETY: `setup` is non-null; the pointers describe `n`
+                // interleaved complex elements each, and the out-of-place
+                // interleaved DFT reads `input` and writes the distinct `output`.
+                unsafe {
+                    nuvai_mkl_sys::vDSP_DFT_Interleaved_ExecuteD(
+                        setup,
+                        input.as_ptr() as *const nuvai_mkl_sys::DSPDoubleComplex,
+                        output.as_mut_ptr() as *mut nuvai_mkl_sys::DSPDoubleComplex,
+                    );
+                }
+                if inverse {
+                    let scale = 1.0 / n as f64;
+                    for y in output.iter_mut() {
+                        y.real *= scale;
+                        y.imag *= scale;
+                    }
+                }
+            }
+            FftBackend::Split {
+                forward,
+                inverse: inv,
+                scratch64,
+                ..
+            } => {
+                let mut scratch = scratch64.borrow_mut();
+                let (re, im) = scratch.get_or_insert_with(|| (vec![0.0f64; n], vec![0.0f64; n]));
+                for (i, x) in input.iter().enumerate() {
+                    re[i] = x.real;
+                    im[i] = x.imag;
+                }
+                let setup = if inverse { *inv } else { *forward };
+                // SAFETY: `setup` is the non-null split setup; `re`/`im` are
+                // length-`n` scratch arrays and `vDSP_DFT_ExecuteD` reads and
+                // writes exactly the first `n` split-complex elements.
+                unsafe {
+                    nuvai_mkl_sys::vDSP_DFT_ExecuteD(
+                        setup,
+                        re.as_ptr(),
+                        im.as_ptr(),
+                        re.as_mut_ptr(),
+                        im.as_mut_ptr(),
+                    );
+                }
+                let scale = if inverse { 1.0 / n as f64 } else { 1.0f64 };
+                for (i, y) in output.iter_mut().enumerate() {
+                    y.real = re[i] * scale;
+                    y.imag = im[i] * scale;
+                }
+            }
         }
     }
 }
@@ -443,16 +650,35 @@ impl Drop for FftPlan {
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            // SAFETY: `self.handle.forward`/`inverse` are valid setups created
-            // non-null in `create`, and each is destroyed exactly once here via
-            // the precision-matched destroy routine.
-            unsafe {
-                if self.handle.single {
-                    nuvai_mkl_sys::vDSP_DFT_DestroySetup(self.handle.forward);
-                    nuvai_mkl_sys::vDSP_DFT_DestroySetup(self.handle.inverse);
-                } else {
-                    nuvai_mkl_sys::vDSP_DFT_DestroySetupD(self.handle.forward);
-                    nuvai_mkl_sys::vDSP_DFT_DestroySetupD(self.handle.inverse);
+            match &self.handle.backend {
+                FftBackend::Interleaved { forward, inverse } => {
+                    // SAFETY: `forward`/`inverse` are valid interleaved setups
+                    // created non-null in `create_interleaved`, and each is
+                    // destroyed exactly once here via the precision-matched
+                    // destroy routine.
+                    unsafe {
+                        if self.handle.single {
+                            nuvai_mkl_sys::vDSP_DFT_Interleaved_DestroySetup(*forward);
+                            nuvai_mkl_sys::vDSP_DFT_Interleaved_DestroySetup(*inverse);
+                        } else {
+                            nuvai_mkl_sys::vDSP_DFT_Interleaved_DestroySetupD(*forward);
+                            nuvai_mkl_sys::vDSP_DFT_Interleaved_DestroySetupD(*inverse);
+                        }
+                    }
+                }
+                FftBackend::Split { forward, inverse, .. } => {
+                    // SAFETY: `forward`/`inverse` are valid split setups created
+                    // non-null in `create_split`, and each is destroyed exactly
+                    // once here via the precision-matched destroy routine.
+                    unsafe {
+                        if self.handle.single {
+                            nuvai_mkl_sys::vDSP_DFT_DestroySetup(*forward);
+                            nuvai_mkl_sys::vDSP_DFT_DestroySetup(*inverse);
+                        } else {
+                            nuvai_mkl_sys::vDSP_DFT_DestroySetupD(*forward);
+                            nuvai_mkl_sys::vDSP_DFT_DestroySetupD(*inverse);
+                        }
+                    }
                 }
             }
         }

@@ -156,9 +156,8 @@ fn fft_roundtrip_c64() {
 #[test]
 fn fft_roundtrip_c32_non_pow2() {
     // 24 = 3·2^3 is not a power of two, so this exercises the non-power-of-two
-    // path (DFTI on Intel; vDSP's `f·2^n` for `n >= 3` on aarch64 — note 6 =
-    // 3·2^1 is *not* implemented by vDSP). As for any length, the DFT of the
-    // impulse is all-ones and its inverse recovers it.
+    // path (DFTI on Intel; vDSP's interleaved `f·2^n` family on aarch64). As for
+    // any length, the DFT of the impulse is all-ones and its inverse recovers it.
     let plan = fft::FftPlan::new_c32(24).unwrap();
     let mut input = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 24];
     input[0].real = 1.0;
@@ -174,6 +173,52 @@ fn fft_roundtrip_c32_non_pow2() {
     assert!((out[0].real - 1.0).abs() <= 1e-5, "out[0] = {}", out[0].real);
     for o in &out[1..] {
         assert!(o.real.abs() <= 1e-5 && o.imag.abs() <= 1e-5);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn fft_roundtrip_c32_len8() {
+    // 8 = 2·2^2 is the smallest length the interleaved-complex family plans
+    // (macOS 12.0+ on aarch64; DFTI on Intel), so this exercises that path
+    // directly rather than the split-complex fallback used for lengths 2 and 4.
+    let plan = fft::FftPlan::new_c32(8).unwrap();
+    let mut input = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 8];
+    input[0].real = 1.0;
+    let mut freq = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 8];
+    plan.forward_c32(&input, &mut freq).unwrap();
+    for f in &freq {
+        assert!((f.real - 1.0).abs() <= 1e-5, "real = {}", f.real);
+        assert!(f.imag.abs() <= 1e-5, "imag = {}", f.imag);
+    }
+
+    let mut out = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 8];
+    plan.backward_c32(&freq, &mut out).unwrap();
+    assert!((out[0].real - 1.0).abs() <= 1e-5, "out[0] = {}", out[0].real);
+    for o in &out[1..] {
+        assert!(o.real.abs() <= 1e-5 && o.imag.abs() <= 1e-5);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn fft_roundtrip_c64_len8() {
+    // Double-precision analogue of `fft_roundtrip_c32_len8`.
+    let plan = fft::FftPlan::new_c64(8).unwrap();
+    let mut input = vec![MKL_Complex16 { real: 0.0, imag: 0.0 }; 8];
+    input[0].real = 1.0;
+    let mut freq = vec![MKL_Complex16 { real: 0.0, imag: 0.0 }; 8];
+    plan.forward_c64(&input, &mut freq).unwrap();
+    for f in &freq {
+        assert!((f.real - 1.0).abs() <= 1e-9, "real = {}", f.real);
+        assert!(f.imag.abs() <= 1e-9, "imag = {}", f.imag);
+    }
+
+    let mut out = vec![MKL_Complex16 { real: 0.0, imag: 0.0 }; 8];
+    plan.backward_c64(&freq, &mut out).unwrap();
+    assert!((out[0].real - 1.0).abs() <= 1e-9, "out[0] = {}", out[0].real);
+    for o in &out[1..] {
+        assert!(o.real.abs() <= 1e-9 && o.imag.abs() <= 1e-9);
     }
 }
 

@@ -15,6 +15,11 @@ jobs:
   aarch64-darwin:
     name: aarch64-apple-darwin (Accelerate)
     runs-on: macos-14-xlarge # public Apple Silicon runner (arm64)
+    env:
+      # The FFT backend uses vDSP's interleaved-complex DFT, which is
+      # `API_AVAILABLE(macos(12.0))` (task #13); pin the deployment target so
+      # the linker accepts those symbols without an availability warning.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +52,9 @@ jobs:
     env:
       # openblas is keg-only, so `-lopenblas` needs an explicit search path.
       RUSTFLAGS: "-L /opt/homebrew/opt/openblas/lib"
+      # Same as the Accelerate job: vDSP's interleaved-complex DFT (task #13)
+      # is macOS 12.0+, so pin the deployment target for the linker.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v4
 

@@ -51,6 +51,35 @@ pub type vDSP_DFT_Setup = *mut c_void;
 /// Opaque double-precision DFT setup (`struct vDSP_DFT_SetupStructD *`).
 pub type vDSP_DFT_SetupD = *mut c_void;
 
+/// Opaque interleaved-complex DFT setup (`struct vDSP_DFT_Interleaved_SetupStruct *`).
+pub type vDSP_DFT_Interleaved_Setup = *mut c_void;
+/// Opaque double-precision interleaved-complex DFT setup.
+pub type vDSP_DFT_Interleaved_SetupD = *mut c_void;
+
+/// Real-to-complex flag for the interleaved DFT (`vDSP_ENUM(bool,
+/// vDSP_DFT_RealtoComplex)`). Declared `c_int` for ABI uniformity with the
+/// other vDSP enum args; only `0`/`1` is ever passed, so the callee's `_Bool`
+/// read is correct.
+pub type vDSP_DFT_RealtoComplex = c_int;
+pub const vDSP_DFT_Interleaved_ComplextoComplex: vDSP_DFT_RealtoComplex = 0;
+pub const vDSP_DFT_Interleaved_RealtoComplex: vDSP_DFT_RealtoComplex = 1;
+
+/// Interleaved single-precision complex (layout-identical to `MKL_Complex8`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DSPComplex {
+    pub real: f32,
+    pub imag: f32,
+}
+
+/// Interleaved double-precision complex (layout-identical to `MKL_Complex16`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DSPDoubleComplex {
+    pub real: f64,
+    pub imag: f64,
+}
+
 // ---------------------------------------------------------------------------
 // vForce (note argument order: `(y, x, n)` — unlike MKL's `(n, src, dst)`)
 // ---------------------------------------------------------------------------
@@ -289,6 +318,35 @@ unsafe extern "C" {
     );
     pub fn vDSP_DFT_DestroySetup(setup: vDSP_DFT_Setup);
     pub fn vDSP_DFT_DestroySetupD(setup: vDSP_DFT_SetupD);
+
+    // --- vDSP DFT (interleaved complex, macOS 12.0+) ---
+    // Unlike the split family above, these transform an interleaved
+    // `DSP*Complex` buffer directly (no split/reinterleave copy). Availability
+    // is `API_AVAILABLE(macos(12.0), …)` — later than the split family's 10.7.
+    pub fn vDSP_DFT_Interleaved_CreateSetup(
+        previous: vDSP_DFT_Interleaved_Setup,
+        length: vDSP_Length,
+        direction: vDSP_DFT_Direction,
+        real_to_complex: vDSP_DFT_RealtoComplex,
+    ) -> vDSP_DFT_Interleaved_Setup;
+    pub fn vDSP_DFT_Interleaved_CreateSetupD(
+        previous: vDSP_DFT_Interleaved_SetupD,
+        length: vDSP_Length,
+        direction: vDSP_DFT_Direction,
+        real_to_complex: vDSP_DFT_RealtoComplex,
+    ) -> vDSP_DFT_Interleaved_SetupD;
+    pub fn vDSP_DFT_Interleaved_Execute(
+        setup: vDSP_DFT_Interleaved_Setup,
+        ir: *const DSPComplex,
+        or: *mut DSPComplex,
+    );
+    pub fn vDSP_DFT_Interleaved_ExecuteD(
+        setup: vDSP_DFT_Interleaved_SetupD,
+        ir: *const DSPDoubleComplex,
+        or: *mut DSPDoubleComplex,
+    );
+    pub fn vDSP_DFT_Interleaved_DestroySetup(setup: vDSP_DFT_Interleaved_Setup);
+    pub fn vDSP_DFT_Interleaved_DestroySetupD(setup: vDSP_DFT_Interleaved_SetupD);
 
     // --- vForce (vector math; `(y, x, n)` argument order) ---
     pub fn vvexpf(y: *mut f32, x: *const f32, n: *const c_int);

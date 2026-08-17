@@ -54,12 +54,9 @@ fn main() {
         // because this crate declares no `links` key, so Cargo would drop it —
         // the backend already propagates via `nuvai-mkl-src` (`DEP_MKL_BACKEND`).
         ("macos", "aarch64") | ("linux", "aarch64") => {
-            let backend = nuvai_mkl_src::backend_for_target(
-                &target_os,
-                &target_arch,
-                target_env.as_deref(),
-            )
-            .unwrap_or_else(|e| panic!("{e}"));
+            let backend =
+                nuvai_mkl_src::backend_for_target(&target_os, &target_arch, target_env.as_deref())
+                    .unwrap_or_else(|e| panic!("{e}"));
             eprintln!(
                 "[nuvai-mkl-sys] {target_os}-{target_arch}: hand-written FFI surface ({})",
                 nuvai_mkl_src::backend_tag(backend)

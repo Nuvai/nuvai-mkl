@@ -20,10 +20,10 @@
 //! flags to [`dss_solve_real_`]. Only the indexing/precision flags
 //! (`MKL_DSS_ZERO_BASED_INDEXING`) are passed to [`dss_create_`].
 
-#[cfg(not(target_arch = "aarch64"))]
-use std::os::raw::c_void;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::os::raw::c_long;
+#[cfg(not(target_arch = "aarch64"))]
+use std::os::raw::c_void;
 #[cfg(not(target_arch = "aarch64"))]
 use std::ptr;
 

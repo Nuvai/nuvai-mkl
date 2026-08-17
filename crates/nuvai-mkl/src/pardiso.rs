@@ -13,19 +13,19 @@
 // `c_void`/`ptr` are used by the Intel path and the Accelerate (macOS-aarch64)
 // helpers but not by the linux-aarch64 Unsupported path, so gate them to every
 // target except the inert linux-aarch64 arm.
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    not(target_arch = "aarch64")
-))]
-use std::os::raw::c_void;
+use std::marker::PhantomData;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::os::raw::c_long;
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     not(target_arch = "aarch64")
 ))]
+use std::os::raw::c_void;
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    not(target_arch = "aarch64")
+))]
 use std::ptr;
-use std::marker::PhantomData;
 
 use crate::error::{Error, Result};
 
@@ -111,7 +111,11 @@ impl Pardiso {
             // size `pardisoinit` expects to initialize; `mtype` is passed by
             // const reference and only read.
             unsafe {
-                nuvai_mkl_sys::pardisoinit(pt.as_mut_ptr() as *mut c_void, &mtype, iparm.as_mut_ptr());
+                nuvai_mkl_sys::pardisoinit(
+                    pt.as_mut_ptr() as *mut c_void,
+                    &mtype,
+                    iparm.as_mut_ptr(),
+                );
             }
             Self {
                 pt,
@@ -274,7 +278,13 @@ impl Pardiso {
 /// CSC buffers can be dropped after factoring.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl Pardiso {
-    fn solve_accelerate(&mut self, ia: &[i32], ja: &[i32], a: &[f64], b: &[f64]) -> Result<Vec<f64>> {
+    fn solve_accelerate(
+        &mut self,
+        ia: &[i32],
+        ja: &[i32],
+        a: &[f64],
+        b: &[f64],
+    ) -> Result<Vec<f64>> {
         // The Accelerate QR backend factors a *full* (ordinary) matrix. PARDISO's
         // symmetric `mtype`s (SPD / symmetric indefinite) store only one triangle,
         // which QR would read as a full matrix and silently mis-solve. Reject them
@@ -424,7 +434,9 @@ pub(crate) fn csr_to_csc(
     // base, and a non-decreasing row_index. Any other shape would silently drop
     // or mis-index entries.
     if row_index[0] != base {
-        return Err(Error::invalid("CSR row_index[0] does not match the index base"));
+        return Err(Error::invalid(
+            "CSR row_index[0] does not match the index base",
+        ));
     }
     if row_index[n] != nnz as i32 + base {
         return Err(Error::invalid("CSR row_index[n] does not match nnz"));

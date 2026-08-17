@@ -4,7 +4,7 @@
 // The FFT round-trip tests (and their complex types) do not run on
 // aarch64-unknown-linux-gnu, where FFT returns Unsupported.
 #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
-use nuvai_mkl::fft::{MKL_Complex16, MKL_Complex8};
+use nuvai_mkl::fft::{MKL_Complex8, MKL_Complex16};
 use nuvai_mkl::layout::{Layout, Transpose};
 use nuvai_mkl::{blas, dss, fft, lapack, pardiso, vml, vsl};
 
@@ -67,60 +67,69 @@ fn blas_rejects_undersized_slices() {
     let a = [1.0f32; 4];
     let b = [1.0f32; 4];
     let mut c = [0.0f32; 4];
-    assert!(blas::sgemm(
-        Layout::RowMajor,
-        Transpose::NoTrans,
-        Transpose::NoTrans,
-        100_000,
-        2,
-        2,
-        1.0,
-        &a,
-        2,
-        &b,
-        2,
-        0.0,
-        &mut c,
-        2,
-    )
-    .is_err());
+    assert!(
+        blas::sgemm(
+            Layout::RowMajor,
+            Transpose::NoTrans,
+            Transpose::NoTrans,
+            100_000,
+            2,
+            2,
+            1.0,
+            &a,
+            2,
+            &b,
+            2,
+            0.0,
+            &mut c,
+            2,
+        )
+        .is_err()
+    );
 
     // Leading dimension below the stored width (row-major `lda < k`).
     let a = [1.0f32; 4];
     let b = [1.0f32; 4];
     let mut c = [0.0f32; 4];
-    assert!(blas::sgemm(
-        Layout::RowMajor,
-        Transpose::NoTrans,
-        Transpose::NoTrans,
-        2,
-        2,
-        2,
-        1.0,
-        &a,
-        1,
-        &b,
-        2,
-        0.0,
-        &mut c,
-        2,
-    )
-    .is_err());
+    assert!(
+        blas::sgemm(
+            Layout::RowMajor,
+            Transpose::NoTrans,
+            Transpose::NoTrans,
+            2,
+            2,
+            2,
+            1.0,
+            &a,
+            1,
+            &b,
+            2,
+            0.0,
+            &mut c,
+            2,
+        )
+        .is_err()
+    );
 
-    // Level-1: undersized, zero stride, and negative count are all invalid.
+    // Level-1: undersized, zero/negative stride, and negative count are all
+    // invalid. A negative stride is rejected up front — the wrapper passes the
+    // slice's first element as the CBLAS base, so a negative stride would walk
+    // *below* the slice (heap OOB from safe code).
     let x = [1.0f32; 2];
     let mut y = [0.0f32; 2];
     assert!(blas::saxpy(3, 1.0, &x, 1, &mut y, 1).is_err());
     assert!(blas::saxpy(3, 1.0, &x, 0, &mut y, 1).is_err());
+    assert!(blas::saxpy(3, 1.0, &x, -1, &mut y, 1).is_err());
     assert!(blas::saxpy(-1, 1.0, &x, 1, &mut y, 1).is_err());
 
     // `sdot`/`ddot` now return `Result`.
     assert!(blas::sdot(3, &x, 1, &[1.0f32; 2], 1).is_err());
     assert!(blas::ddot(3, &[1.0f64; 2], 1, &[1.0f64; 2], 1).is_err());
 
-    // `sscal`/`dscal` undersized.
+    // `sscal`/`dscal` undersized or negative stride.
     let mut xs = [1.0f32; 2];
     assert!(blas::sscal(3, 2.0, &mut xs, 1).is_err());
+    assert!(blas::sscal(3, 2.0, &mut xs, -1).is_err());
     let mut xd = [1.0f64; 2];
     assert!(blas::dscal(3, 2.0, &mut xd, 1).is_err());
 }
@@ -171,12 +180,27 @@ fn fft_roundtrip_c32() {
     let plan = fft::FftPlan::new_c32(4).unwrap();
     // Impulse δ = [1,0,0,0] -> forward = [1,1,1,1].
     let input = [
-        MKL_Complex8 { real: 1.0, imag: 0.0 },
-        MKL_Complex8 { real: 0.0, imag: 0.0 },
-        MKL_Complex8 { real: 0.0, imag: 0.0 },
-        MKL_Complex8 { real: 0.0, imag: 0.0 },
+        MKL_Complex8 {
+            real: 1.0,
+            imag: 0.0,
+        },
+        MKL_Complex8 {
+            real: 0.0,
+            imag: 0.0,
+        },
+        MKL_Complex8 {
+            real: 0.0,
+            imag: 0.0,
+        },
+        MKL_Complex8 {
+            real: 0.0,
+            imag: 0.0,
+        },
     ];
-    let mut freq = [MKL_Complex8 { real: 0.0, imag: 0.0 }; 4];
+    let mut freq = [MKL_Complex8 {
+        real: 0.0,
+        imag: 0.0,
+    }; 4];
     plan.forward_c32(&input, &mut freq).unwrap();
     for f in &freq {
         assert!((f.real - 1.0).abs() <= 1e-5, "real = {}", f.real);
@@ -184,9 +208,16 @@ fn fft_roundtrip_c32() {
     }
 
     // Backward of [1,1,1,1] recovers the impulse (default 1/n scaling).
-    let mut out = [MKL_Complex8 { real: 0.0, imag: 0.0 }; 4];
+    let mut out = [MKL_Complex8 {
+        real: 0.0,
+        imag: 0.0,
+    }; 4];
     plan.backward_c32(&freq, &mut out).unwrap();
-    assert!((out[0].real - 1.0).abs() <= 1e-5, "out[0] = {}", out[0].real);
+    assert!(
+        (out[0].real - 1.0).abs() <= 1e-5,
+        "out[0] = {}",
+        out[0].real
+    );
     for o in &out[1..] {
         assert!(o.real.abs() <= 1e-5 && o.imag.abs() <= 1e-5);
     }
@@ -198,21 +229,43 @@ fn fft_roundtrip_c64() {
     let plan = fft::FftPlan::new_c64(4).unwrap();
     // Same impulse test as the c32 variant, in double precision.
     let input = [
-        MKL_Complex16 { real: 1.0, imag: 0.0 },
-        MKL_Complex16 { real: 0.0, imag: 0.0 },
-        MKL_Complex16 { real: 0.0, imag: 0.0 },
-        MKL_Complex16 { real: 0.0, imag: 0.0 },
+        MKL_Complex16 {
+            real: 1.0,
+            imag: 0.0,
+        },
+        MKL_Complex16 {
+            real: 0.0,
+            imag: 0.0,
+        },
+        MKL_Complex16 {
+            real: 0.0,
+            imag: 0.0,
+        },
+        MKL_Complex16 {
+            real: 0.0,
+            imag: 0.0,
+        },
     ];
-    let mut freq = [MKL_Complex16 { real: 0.0, imag: 0.0 }; 4];
+    let mut freq = [MKL_Complex16 {
+        real: 0.0,
+        imag: 0.0,
+    }; 4];
     plan.forward_c64(&input, &mut freq).unwrap();
     for f in &freq {
         assert!((f.real - 1.0).abs() <= 1e-9, "real = {}", f.real);
         assert!(f.imag.abs() <= 1e-9, "imag = {}", f.imag);
     }
 
-    let mut out = [MKL_Complex16 { real: 0.0, imag: 0.0 }; 4];
+    let mut out = [MKL_Complex16 {
+        real: 0.0,
+        imag: 0.0,
+    }; 4];
     plan.backward_c64(&freq, &mut out).unwrap();
-    assert!((out[0].real - 1.0).abs() <= 1e-9, "out[0] = {}", out[0].real);
+    assert!(
+        (out[0].real - 1.0).abs() <= 1e-9,
+        "out[0] = {}",
+        out[0].real
+    );
     for o in &out[1..] {
         assert!(o.real.abs() <= 1e-9 && o.imag.abs() <= 1e-9);
     }
@@ -226,19 +279,35 @@ fn fft_roundtrip_c32_len2() {
     // and its inverse recovers it.
     let plan = fft::FftPlan::new_c32(2).unwrap();
     let input = [
-        MKL_Complex8 { real: 1.0, imag: 0.0 },
-        MKL_Complex8 { real: 0.0, imag: 0.0 },
+        MKL_Complex8 {
+            real: 1.0,
+            imag: 0.0,
+        },
+        MKL_Complex8 {
+            real: 0.0,
+            imag: 0.0,
+        },
     ];
-    let mut freq = [MKL_Complex8 { real: 0.0, imag: 0.0 }; 2];
+    let mut freq = [MKL_Complex8 {
+        real: 0.0,
+        imag: 0.0,
+    }; 2];
     plan.forward_c32(&input, &mut freq).unwrap();
     for f in &freq {
         assert!((f.real - 1.0).abs() <= 1e-5, "real = {}", f.real);
         assert!(f.imag.abs() <= 1e-5, "imag = {}", f.imag);
     }
 
-    let mut out = [MKL_Complex8 { real: 0.0, imag: 0.0 }; 2];
+    let mut out = [MKL_Complex8 {
+        real: 0.0,
+        imag: 0.0,
+    }; 2];
     plan.backward_c32(&freq, &mut out).unwrap();
-    assert!((out[0].real - 1.0).abs() <= 1e-5, "out[0] = {}", out[0].real);
+    assert!(
+        (out[0].real - 1.0).abs() <= 1e-5,
+        "out[0] = {}",
+        out[0].real
+    );
     for o in &out[1..] {
         assert!(o.real.abs() <= 1e-5 && o.imag.abs() <= 1e-5);
     }
@@ -250,19 +319,35 @@ fn fft_roundtrip_c64_len2() {
     // Double-precision analogue of `fft_roundtrip_c32_len2`.
     let plan = fft::FftPlan::new_c64(2).unwrap();
     let input = [
-        MKL_Complex16 { real: 1.0, imag: 0.0 },
-        MKL_Complex16 { real: 0.0, imag: 0.0 },
+        MKL_Complex16 {
+            real: 1.0,
+            imag: 0.0,
+        },
+        MKL_Complex16 {
+            real: 0.0,
+            imag: 0.0,
+        },
     ];
-    let mut freq = [MKL_Complex16 { real: 0.0, imag: 0.0 }; 2];
+    let mut freq = [MKL_Complex16 {
+        real: 0.0,
+        imag: 0.0,
+    }; 2];
     plan.forward_c64(&input, &mut freq).unwrap();
     for f in &freq {
         assert!((f.real - 1.0).abs() <= 1e-9, "real = {}", f.real);
         assert!(f.imag.abs() <= 1e-9, "imag = {}", f.imag);
     }
 
-    let mut out = [MKL_Complex16 { real: 0.0, imag: 0.0 }; 2];
+    let mut out = [MKL_Complex16 {
+        real: 0.0,
+        imag: 0.0,
+    }; 2];
     plan.backward_c64(&freq, &mut out).unwrap();
-    assert!((out[0].real - 1.0).abs() <= 1e-9, "out[0] = {}", out[0].real);
+    assert!(
+        (out[0].real - 1.0).abs() <= 1e-9,
+        "out[0] = {}",
+        out[0].real
+    );
     for o in &out[1..] {
         assert!(o.real.abs() <= 1e-9 && o.imag.abs() <= 1e-9);
     }
@@ -275,18 +360,40 @@ fn fft_roundtrip_c32_non_pow2() {
     // path (DFTI on Intel; vDSP's interleaved `f·2^n` family on aarch64). As for
     // any length, the DFT of the impulse is all-ones and its inverse recovers it.
     let plan = fft::FftPlan::new_c32(24).unwrap();
-    let mut input = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 24];
+    let mut input = vec![
+        MKL_Complex8 {
+            real: 0.0,
+            imag: 0.0
+        };
+        24
+    ];
     input[0].real = 1.0;
-    let mut freq = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 24];
+    let mut freq = vec![
+        MKL_Complex8 {
+            real: 0.0,
+            imag: 0.0
+        };
+        24
+    ];
     plan.forward_c32(&input, &mut freq).unwrap();
     for f in &freq {
         assert!((f.real - 1.0).abs() <= 1e-5, "real = {}", f.real);
         assert!(f.imag.abs() <= 1e-5, "imag = {}", f.imag);
     }
 
-    let mut out = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 24];
+    let mut out = vec![
+        MKL_Complex8 {
+            real: 0.0,
+            imag: 0.0
+        };
+        24
+    ];
     plan.backward_c32(&freq, &mut out).unwrap();
-    assert!((out[0].real - 1.0).abs() <= 1e-5, "out[0] = {}", out[0].real);
+    assert!(
+        (out[0].real - 1.0).abs() <= 1e-5,
+        "out[0] = {}",
+        out[0].real
+    );
     for o in &out[1..] {
         assert!(o.real.abs() <= 1e-5 && o.imag.abs() <= 1e-5);
     }
@@ -299,18 +406,40 @@ fn fft_roundtrip_c32_len8() {
     // (macOS 12.0+ on aarch64; DFTI on Intel), so this exercises that path
     // directly rather than the split-complex fallback used for lengths 2 and 4.
     let plan = fft::FftPlan::new_c32(8).unwrap();
-    let mut input = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 8];
+    let mut input = vec![
+        MKL_Complex8 {
+            real: 0.0,
+            imag: 0.0
+        };
+        8
+    ];
     input[0].real = 1.0;
-    let mut freq = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 8];
+    let mut freq = vec![
+        MKL_Complex8 {
+            real: 0.0,
+            imag: 0.0
+        };
+        8
+    ];
     plan.forward_c32(&input, &mut freq).unwrap();
     for f in &freq {
         assert!((f.real - 1.0).abs() <= 1e-5, "real = {}", f.real);
         assert!(f.imag.abs() <= 1e-5, "imag = {}", f.imag);
     }
 
-    let mut out = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 8];
+    let mut out = vec![
+        MKL_Complex8 {
+            real: 0.0,
+            imag: 0.0
+        };
+        8
+    ];
     plan.backward_c32(&freq, &mut out).unwrap();
-    assert!((out[0].real - 1.0).abs() <= 1e-5, "out[0] = {}", out[0].real);
+    assert!(
+        (out[0].real - 1.0).abs() <= 1e-5,
+        "out[0] = {}",
+        out[0].real
+    );
     for o in &out[1..] {
         assert!(o.real.abs() <= 1e-5 && o.imag.abs() <= 1e-5);
     }
@@ -321,18 +450,40 @@ fn fft_roundtrip_c32_len8() {
 fn fft_roundtrip_c64_len8() {
     // Double-precision analogue of `fft_roundtrip_c32_len8`.
     let plan = fft::FftPlan::new_c64(8).unwrap();
-    let mut input = vec![MKL_Complex16 { real: 0.0, imag: 0.0 }; 8];
+    let mut input = vec![
+        MKL_Complex16 {
+            real: 0.0,
+            imag: 0.0
+        };
+        8
+    ];
     input[0].real = 1.0;
-    let mut freq = vec![MKL_Complex16 { real: 0.0, imag: 0.0 }; 8];
+    let mut freq = vec![
+        MKL_Complex16 {
+            real: 0.0,
+            imag: 0.0
+        };
+        8
+    ];
     plan.forward_c64(&input, &mut freq).unwrap();
     for f in &freq {
         assert!((f.real - 1.0).abs() <= 1e-9, "real = {}", f.real);
         assert!(f.imag.abs() <= 1e-9, "imag = {}", f.imag);
     }
 
-    let mut out = vec![MKL_Complex16 { real: 0.0, imag: 0.0 }; 8];
+    let mut out = vec![
+        MKL_Complex16 {
+            real: 0.0,
+            imag: 0.0
+        };
+        8
+    ];
     plan.backward_c64(&freq, &mut out).unwrap();
-    assert!((out[0].real - 1.0).abs() <= 1e-9, "out[0] = {}", out[0].real);
+    assert!(
+        (out[0].real - 1.0).abs() <= 1e-9,
+        "out[0] = {}",
+        out[0].real
+    );
     for o in &out[1..] {
         assert!(o.real.abs() <= 1e-9 && o.imag.abs() <= 1e-9);
     }

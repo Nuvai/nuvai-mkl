@@ -391,9 +391,7 @@ unsafe extern "C" {
         soln: *const DenseMatrix_Double,
         workspace: *mut c_void,
     );
-    pub fn _SparseDestroyOpaqueNumeric_Double(
-        toFree: *mut SparseOpaqueFactorization_Double,
-    );
+    pub fn _SparseDestroyOpaqueNumeric_Double(toFree: *mut SparseOpaqueFactorization_Double);
 
     // --- libc allocator (backs the default sparse `SparseSymbolicFactorOptions`)
     pub fn malloc(size: usize) -> *mut c_void;

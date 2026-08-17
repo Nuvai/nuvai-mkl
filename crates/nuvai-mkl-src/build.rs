@@ -33,8 +33,7 @@ fn main() {
     // The backend is a property of the *target* being built, not of the host
     // this build script runs on (see the module docs above).
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS is set");
-    let target_arch =
-        std::env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH is set");
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH is set");
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").ok();
 
     let backend = backend_for_target(&target_os, &target_arch, target_env.as_deref())

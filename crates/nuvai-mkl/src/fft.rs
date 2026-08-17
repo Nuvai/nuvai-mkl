@@ -20,7 +20,7 @@ use std::ptr;
 
 use crate::error::{Error, Result};
 
-pub use nuvai_mkl_sys::{MKL_Complex16, MKL_Complex8};
+pub use nuvai_mkl_sys::{MKL_Complex8, MKL_Complex16};
 
 /// Opaque plan handle. On Intel this is the committed DFTI descriptor; on
 /// aarch64 it holds the forward + inverse vDSP DFT setups and the precision.
@@ -189,18 +189,28 @@ impl FftPlan {
             if status != 0 {
                 // SAFETY: `handle` is a valid descriptor, freed exactly once here.
                 unsafe { nuvai_mkl_sys::DftiFreeDescriptor(&mut handle) };
-                return Err(Error::mkl(status as i32, "DftiSetValue(DFTI_FORWARD_SCALE)"));
+                return Err(Error::mkl(
+                    status as i32,
+                    "DftiSetValue(DFTI_FORWARD_SCALE)",
+                ));
             }
             let backward_scale = 1.0f64 / len as f64;
             // SAFETY: `handle` is a valid descriptor; `DFTI_BACKWARD_SCALE` with
             // the computed `1/len` value is valid config.
             let status = unsafe {
-                nuvai_mkl_sys::DftiSetValue(handle, nuvai_mkl_sys::DFTI_BACKWARD_SCALE, backward_scale)
+                nuvai_mkl_sys::DftiSetValue(
+                    handle,
+                    nuvai_mkl_sys::DFTI_BACKWARD_SCALE,
+                    backward_scale,
+                )
             };
             if status != 0 {
                 // SAFETY: `handle` is a valid descriptor, freed exactly once here.
                 unsafe { nuvai_mkl_sys::DftiFreeDescriptor(&mut handle) };
-                return Err(Error::mkl(status as i32, "DftiSetValue(DFTI_BACKWARD_SCALE)"));
+                return Err(Error::mkl(
+                    status as i32,
+                    "DftiSetValue(DFTI_BACKWARD_SCALE)",
+                ));
             }
             // SAFETY: `handle` is a valid, fully-configured descriptor.
             let status = unsafe { nuvai_mkl_sys::DftiCommitDescriptor(handle) };
@@ -315,7 +325,11 @@ impl FftPlan {
     }
 
     /// Backward transform (double precision), `input → output` (scaled by `1/n`).
-    pub fn backward_c64(&self, input: &[MKL_Complex16], output: &mut [MKL_Complex16]) -> Result<()> {
+    pub fn backward_c64(
+        &self,
+        input: &[MKL_Complex16],
+        output: &mut [MKL_Complex16],
+    ) -> Result<()> {
         self.check(input.len(), output.len())?;
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         {
@@ -383,10 +397,7 @@ impl FftPlan {
     /// Try to plan the interleaved-complex family. Returns `None` when the
     /// length is unsupported (vDSP returns a null setup), signalling `create`
     /// to fall back to the split family.
-    fn create_interleaved(
-        length: nuvai_mkl_sys::vDSP_Length,
-        single: bool,
-    ) -> Option<FftBackend> {
+    fn create_interleaved(length: nuvai_mkl_sys::vDSP_Length, single: bool) -> Option<FftBackend> {
         let complextocomplex = nuvai_mkl_sys::vDSP_DFT_Interleaved_ComplextoComplex;
         // SAFETY: `CreateSetup`/`CreateSetupD` take a null `prev` setup and the
         // positive `length`, returning a new setup (or null on failure). Each
@@ -521,7 +532,10 @@ impl FftPlan {
     fn transform_c32(&self, input: &[MKL_Complex8], output: &mut [MKL_Complex8], inverse: bool) {
         let n = self.len;
         match &self.handle.backend {
-            FftBackend::Interleaved { forward, inverse: inv } => {
+            FftBackend::Interleaved {
+                forward,
+                inverse: inv,
+            } => {
                 let setup = if inverse { *inv } else { *forward };
                 // `DSPComplex` is layout-identical to `MKL_Complex8` (both
                 // `#[repr(C)] { real: f32, imag: f32 }`), so the caller's
@@ -583,7 +597,10 @@ impl FftPlan {
     fn transform_c64(&self, input: &[MKL_Complex16], output: &mut [MKL_Complex16], inverse: bool) {
         let n = self.len;
         match &self.handle.backend {
-            FftBackend::Interleaved { forward, inverse: inv } => {
+            FftBackend::Interleaved {
+                forward,
+                inverse: inv,
+            } => {
                 let setup = if inverse { *inv } else { *forward };
                 // `DSPDoubleComplex` is layout-identical to `MKL_Complex16`
                 // (both `#[repr(C)] { real: f64, imag: f64 }`), so the caller's
@@ -666,7 +683,9 @@ impl Drop for FftPlan {
                         }
                     }
                 }
-                FftBackend::Split { forward, inverse, .. } => {
+                FftBackend::Split {
+                    forward, inverse, ..
+                } => {
                     // SAFETY: `forward`/`inverse` are valid split setups created
                     // non-null in `create_split`, and each is destroyed exactly
                     // once here via the precision-matched destroy routine.

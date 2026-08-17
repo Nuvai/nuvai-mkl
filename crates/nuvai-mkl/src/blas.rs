@@ -5,7 +5,8 @@
 //! pointer reaches CBLAS, mirroring `lapack::check_*_dims`. An undersized slice
 //! or leading dimension is rejected as `ErrorKind::InvalidArgument` rather than
 //! forwarded to MKL — which performs no bounds checking and would otherwise
-//! read/write out of bounds.
+//! read/write out of bounds. Level-1 strides must be positive (a zero or
+//! negative stride would index below the slice).
 
 use crate::error::{Error, Result};
 use crate::layout::{Layout, Transpose};
@@ -44,6 +45,10 @@ fn cblas_trans(trans: Transpose) -> CblasEnum {
 /// cover its stored columns (row-major) or rows (column-major), and its slice
 /// must reach the trailing element CBLAS touches. Rejects undersized buffers —
 /// otherwise a safe call would be a heap out-of-bounds read/write inside MKL.
+///
+/// The leading dimensions are checked even when `alpha == 0`: BLAS enforces
+/// `lda`/`ldb`/`ldc` before its "quick return", so an invalid `ld` is rejected
+/// regardless of whether the operand values are actually read.
 fn check_gemm_dims(
     layout: Layout,
     transa: Transpose,
@@ -106,6 +111,11 @@ fn check_matrix(
 }
 
 /// Validate a level-1 vector argument: `n` elements at stride `inc`.
+///
+/// `inc` must be positive. A zero increment is invalid per the BLAS spec, and a
+/// negative one is rejected outright: the wrapper passes the slice's *first*
+/// element as the CBLAS base, so a negative stride would make CBLAS index below
+/// the slice — a heap out-of-bounds access that a `&[T]` cannot represent.
 fn check_vector(n: i32, len: usize, inc: i32, name: &str) -> Result<()> {
     if n < 0 {
         return Err(Error::invalid(format!("blas: {name} count is negative")));
@@ -113,10 +123,12 @@ fn check_vector(n: i32, len: usize, inc: i32, name: &str) -> Result<()> {
     if n == 0 {
         return Ok(());
     }
-    if inc == 0 {
-        return Err(Error::invalid(format!("blas: {name} increment is zero")));
+    if inc <= 0 {
+        return Err(Error::invalid(format!(
+            "blas: {name} increment must be positive"
+        )));
     }
-    let required = 1 + (n - 1) as usize * inc.unsigned_abs() as usize;
+    let required = 1 + (n - 1) as usize * inc as usize;
     if len < required {
         return Err(Error::invalid(format!("blas: {name} too short")));
     }
@@ -145,7 +157,18 @@ pub fn sgemm(
     ldc: i32,
 ) -> Result<()> {
     check_gemm_dims(
-        layout, transa, transb, m, n, k, a.len(), lda, b.len(), ldb, c.len(), ldc,
+        layout,
+        transa,
+        transb,
+        m,
+        n,
+        k,
+        a.len(),
+        lda,
+        b.len(),
+        ldb,
+        c.len(),
+        ldc,
     )?;
     // SAFETY: `a`, `b` and `c` cover the transpose-adjusted leading-dimension
     // region `cblas_sgemm` reads/writes, as enforced by `check_gemm_dims` above.
@@ -189,7 +212,18 @@ pub fn dgemm(
     ldc: i32,
 ) -> Result<()> {
     check_gemm_dims(
-        layout, transa, transb, m, n, k, a.len(), lda, b.len(), ldb, c.len(), ldc,
+        layout,
+        transa,
+        transb,
+        m,
+        n,
+        k,
+        a.len(),
+        lda,
+        b.len(),
+        ldb,
+        c.len(),
+        ldc,
     )?;
     // SAFETY: `a`, `b` and `c` cover the transpose-adjusted leading-dimension
     // region `cblas_dgemm` reads/writes, as enforced by `check_gemm_dims` above.

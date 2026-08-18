@@ -209,7 +209,14 @@ pub fn sgetrf(
         // SAFETY: `a` covers `lda·n` elements and `ipiv` covers `min(m,n)`,
         // per `check_factor_dims` above; `m`, `n`, `lda` are non-negative.
         let info = unsafe {
-            nuvai_mkl_sys::LAPACKE_sgetrf(lapacke_layout(layout), m, n, a.as_mut_ptr(), lda, ipiv.as_mut_ptr())
+            nuvai_mkl_sys::LAPACKE_sgetrf(
+                lapacke_layout(layout),
+                m,
+                n,
+                a.as_mut_ptr(),
+                lda,
+                ipiv.as_mut_ptr(),
+            )
         };
         if info != 0 {
             return Err(Error::mkl(info, "LAPACKE_sgetrf"));
@@ -237,7 +244,14 @@ pub fn dgetrf(
         // SAFETY: `a` covers `lda·n` elements and `ipiv` covers `min(m,n)`,
         // per `check_factor_dims` above.
         let info = unsafe {
-            nuvai_mkl_sys::LAPACKE_dgetrf(lapacke_layout(layout), m, n, a.as_mut_ptr(), lda, ipiv.as_mut_ptr())
+            nuvai_mkl_sys::LAPACKE_dgetrf(
+                lapacke_layout(layout),
+                m,
+                n,
+                a.as_mut_ptr(),
+                lda,
+                ipiv.as_mut_ptr(),
+            )
         };
         if info != 0 {
             return Err(Error::mkl(info, "LAPACKE_dgetrf"));
@@ -435,7 +449,14 @@ mod aarch64 {
         Ok(())
     }
 
-    pub fn sgetrf(layout: Layout, m: i32, n: i32, a: &mut [f32], lda: i32, ipiv: &mut [i32]) -> Result<()> {
+    pub fn sgetrf(
+        layout: Layout,
+        m: i32,
+        n: i32,
+        a: &mut [f32],
+        lda: i32,
+        ipiv: &mut [i32],
+    ) -> Result<()> {
         check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
         let info = match layout {
             Layout::ColMajor => {
@@ -443,7 +464,14 @@ mod aarch64 {
                 // SAFETY: `a` covers `lda·n` and `ipiv` covers `min(m,n)`
                 // (validated above); `info` is a valid out-arg.
                 unsafe {
-                    nuvai_mkl_sys::sgetrf_(&m, &n, a.as_mut_ptr(), &lda, ipiv.as_mut_ptr(), &mut info);
+                    nuvai_mkl_sys::sgetrf_(
+                        &m,
+                        &n,
+                        a.as_mut_ptr(),
+                        &lda,
+                        ipiv.as_mut_ptr(),
+                        &mut info,
+                    );
                 }
                 info
             }
@@ -456,7 +484,14 @@ mod aarch64 {
                 // SAFETY: `a_cm` is freshly allocated to `m·n`; `ipiv` covers
                 // `min(m,n)`; `info` is a valid out-arg.
                 unsafe {
-                    nuvai_mkl_sys::sgetrf_(&m, &n, a_cm.as_mut_ptr(), &lda_cm, ipiv.as_mut_ptr(), &mut info);
+                    nuvai_mkl_sys::sgetrf_(
+                        &m,
+                        &n,
+                        a_cm.as_mut_ptr(),
+                        &lda_cm,
+                        ipiv.as_mut_ptr(),
+                        &mut info,
+                    );
                 }
                 if info == 0 {
                     // Copy the factored matrix back to row-major (LAPACKE parity).
@@ -471,7 +506,14 @@ mod aarch64 {
         Ok(())
     }
 
-    pub fn dgetrf(layout: Layout, m: i32, n: i32, a: &mut [f64], lda: i32, ipiv: &mut [i32]) -> Result<()> {
+    pub fn dgetrf(
+        layout: Layout,
+        m: i32,
+        n: i32,
+        a: &mut [f64],
+        lda: i32,
+        ipiv: &mut [i32],
+    ) -> Result<()> {
         check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
         let info = match layout {
             Layout::ColMajor => {
@@ -479,7 +521,14 @@ mod aarch64 {
                 // SAFETY: `a` covers `lda·n` and `ipiv` covers `min(m,n)`
                 // (validated above); `info` is a valid out-arg.
                 unsafe {
-                    nuvai_mkl_sys::dgetrf_(&m, &n, a.as_mut_ptr(), &lda, ipiv.as_mut_ptr(), &mut info);
+                    nuvai_mkl_sys::dgetrf_(
+                        &m,
+                        &n,
+                        a.as_mut_ptr(),
+                        &lda,
+                        ipiv.as_mut_ptr(),
+                        &mut info,
+                    );
                 }
                 info
             }
@@ -491,7 +540,14 @@ mod aarch64 {
                 // SAFETY: `a_cm` is freshly allocated to `m·n`; `ipiv` covers
                 // `min(m,n)`; `info` is a valid out-arg.
                 unsafe {
-                    nuvai_mkl_sys::dgetrf_(&m, &n, a_cm.as_mut_ptr(), &lda_cm, ipiv.as_mut_ptr(), &mut info);
+                    nuvai_mkl_sys::dgetrf_(
+                        &m,
+                        &n,
+                        a_cm.as_mut_ptr(),
+                        &lda_cm,
+                        ipiv.as_mut_ptr(),
+                        &mut info,
+                    );
                 }
                 if info == 0 {
                     col_to_row_f64(&a_cm, m, n, a, lda);

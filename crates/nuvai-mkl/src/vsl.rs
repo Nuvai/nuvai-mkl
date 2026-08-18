@@ -126,9 +126,8 @@ impl Stream {
             // to infinity (e.g. `MIN..MAX`), which the `a < b` guard above does
             // not catch. Surface that as an error so the aarch64 backend
             // matches Intel VSL's error behaviour instead of panicking.
-            let distr = Uniform::new(a, b).map_err(|e| {
-                Error::invalid(format!("invalid uniform range [{a}, {b}): {e}"))
-            })?;
+            let distr = Uniform::new(a, b)
+                .map_err(|e| Error::invalid(format!("invalid uniform range [{a}, {b}): {e}")))?;
             let mut rng = self.state.borrow_mut();
             for (v, s) in out.iter_mut().zip(distr.sample_iter(&mut *rng)) {
                 *v = s;
@@ -185,9 +184,8 @@ impl Stream {
             // to infinity (e.g. `MIN..MAX`), which the `a < b` guard above does
             // not catch. Surface that as an error so the aarch64 backend
             // matches Intel VSL's error behaviour instead of panicking.
-            let distr = Uniform::new(a, b).map_err(|e| {
-                Error::invalid(format!("invalid uniform range [{a}, {b}): {e}"))
-            })?;
+            let distr = Uniform::new(a, b)
+                .map_err(|e| Error::invalid(format!("invalid uniform range [{a}, {b}): {e}")))?;
             let mut rng = self.state.borrow_mut();
             for (v, s) in out.iter_mut().zip(distr.sample_iter(&mut *rng)) {
                 *v = s;
@@ -227,8 +225,8 @@ impl Stream {
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let distr = Normal::new(mean, sigma)
-                .map_err(|e| Error::invalid(format!("gaussian: {e}")))?;
+            let distr =
+                Normal::new(mean, sigma).map_err(|e| Error::invalid(format!("gaussian: {e}")))?;
             let mut rng = self.state.borrow_mut();
             for (v, s) in out.iter_mut().zip(distr.sample_iter(&mut *rng)) {
                 *v = s;
@@ -268,8 +266,8 @@ impl Stream {
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let distr = Normal::new(mean, sigma)
-                .map_err(|e| Error::invalid(format!("gaussian: {e}")))?;
+            let distr =
+                Normal::new(mean, sigma).map_err(|e| Error::invalid(format!("gaussian: {e}")))?;
             let mut rng = self.state.borrow_mut();
             for (v, s) in out.iter_mut().zip(distr.sample_iter(&mut *rng)) {
                 *v = s;

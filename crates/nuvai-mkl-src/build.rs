@@ -52,6 +52,18 @@ fn main() {
             // VML (vForce) and the sparse solvers (Sparse/SparseSolve) still
             // call Accelerate, so both must be linked on this path.
             if target_os == "macos" {
+                // Homebrew installs openblas keg-only, so `-lopenblas` needs an
+                // explicit search path. Prefer OPENBLAS_ROOT (conda/pip) and
+                // fall back to the Homebrew keg on Apple Silicon. This must be a
+                // `rustc-link-search` (not RUSTFLAGS `-L`) because Cargo does not
+                // forward RUSTFLAGS to build-script linking, and the `-lopenblas`
+                // above propagates to build scripts too.
+                let lib_dir = std::env::var("OPENBLAS_ROOT")
+                    .ok()
+                    .filter(|root| !root.trim().is_empty())
+                    .map(|root| format!("{root}/lib"))
+                    .unwrap_or_else(|| "/opt/homebrew/opt/openblas/lib".to_string());
+                println!("cargo:rustc-link-search=native={lib_dir}");
                 println!("cargo:rustc-link-lib=framework=Accelerate");
             }
             // Linux-aarch64: OpenBLAS is the only backend and covers only

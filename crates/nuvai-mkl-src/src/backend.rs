@@ -224,5 +224,26 @@ mod tests {
         assert!(backend_for_target("linux", "aarch64", Some("android")).is_err());
         assert!(backend_for_target("windows", "aarch64", Some("msvc")).is_err());
         assert!(backend_for_target("macos", "x86_64", None).is_err());
+        // The both-features case is rejected on aarch64-apple-darwin (the Err
+        // arm added for #35); guarded like the dedicated regression test below
+        // so it is a no-op where the crate cannot compile with both features.
+        if cfg!(feature = "accelerate") && cfg!(feature = "openblas") {
+            assert!(backend_for_target("macos", "aarch64", None).is_err());
+        }
+    }
+
+    #[test]
+    fn backend_for_target_rejects_both_features_on_macos_aarch64() {
+        use super::backend_for_target;
+
+        // With BOTH `accelerate` and `openblas` enabled the
+        // aarch64-apple-darwin selection must fail explicitly (ADR-0003)
+        // rather than silently prefer OpenBLAS. Guarded on the both-features
+        // cfg: on an aarch64-apple-darwin host the library cannot even compile
+        // with both features (the new compile_error!), so this test only
+        // asserts where both features compile, e.g. the x86_64 Linux build VM.
+        if cfg!(feature = "accelerate") && cfg!(feature = "openblas") {
+            assert!(backend_for_target("macos", "aarch64", None).is_err());
+        }
     }
 }

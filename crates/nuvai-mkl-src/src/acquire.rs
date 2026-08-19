@@ -177,17 +177,22 @@ fn system_mkl() -> Option<MklInfo> {
     Some(MklInfo { include_dir, lib_dir, omp_lib_dir: None, dll_dirs })
 }
 
+/// One downloadable conda package: `(filename, sha256)`.
+#[cfg(not(target_arch = "aarch64"))]
+type Pkg<'a> = (&'a str, &'a str);
+
+/// The package set for one platform: base MKL, headers, an optional `devel`
+/// package (Windows import libs), and the runtime packages.
+#[cfg(not(target_arch = "aarch64"))]
+type PkgSet<'a> = (Pkg<'a>, Pkg<'a>, Option<Pkg<'a>>, &'a [Pkg<'a>]);
+
 /// Download + extract MKL into the shared cache, returning its paths.
 #[cfg(not(target_arch = "aarch64"))]
 fn download_mkl() -> MklInfo {
     let pkg_dir = cache_dir().join(format!("mkl-{MKL_VERSION}"));
 
-    let ((mkl_file, mkl_sha), (include_file, include_sha), devel, runtime): (
-        (&str, &str),
-        (&str, &str),
-        Option<(&str, &str)>,
-        &[(&str, &str)],
-    ) = match (cfg!(target_os = "linux"), cfg!(target_os = "windows")) {
+    let ((mkl_file, mkl_sha), (include_file, include_sha), devel, runtime): PkgSet<'_> =
+        match (cfg!(target_os = "linux"), cfg!(target_os = "windows")) {
         (true, _) => (
             (LINUX_MKL, LINUX_MKL_SHA256),
             (LINUX_INCLUDE, LINUX_INCLUDE_SHA256),

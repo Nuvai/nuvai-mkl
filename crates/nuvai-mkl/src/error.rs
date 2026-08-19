@@ -44,6 +44,12 @@ impl Error {
     }
 
     /// An operation not available on this backend.
+    // Every caller sits behind `target_arch = "aarch64"`: the Accelerate arms of
+    // `fft`/`pardiso` on macOS, and `unsupported_linux_aarch64` on
+    // aarch64-unknown-linux-gnu. On Intel every domain has a real MKL backend,
+    // so nothing constructs this and it is dead there — not on the aarch64
+    // targets, so the `allow` stays scoped to the arch that needs it.
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
     pub(crate) fn unsupported(message: impl Into<String>) -> Self {
         Self {
             kind: ErrorKind::Unsupported,

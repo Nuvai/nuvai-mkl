@@ -31,6 +31,22 @@ compile_error!(
      enable `accelerate` (default) or `openblas`"
 );
 
+// Enabling BOTH `accelerate` and `openblas` is equally ambiguous: the backend
+// would silently resolve to OpenBLAS (the `openblas` arm is checked first),
+// violating "selection is explicit, never silent" (ADR-0003) exactly as the
+// no-feature case does. Reject at compile time — exactly one feature must be
+// enabled on `aarch64-apple-darwin`.
+#[cfg(all(
+    target_os = "macos",
+    target_arch = "aarch64",
+    feature = "accelerate",
+    feature = "openblas"
+))]
+compile_error!(
+    "nuvai-mkl-src: aarch64-apple-darwin requires exactly one backend feature — \
+     `accelerate` and `openblas` are mutually exclusive; enable exactly one"
+);
+
 // `x86_64-apple-darwin` is unsupported: Intel ended oneMKL for macOS after the
 // 2023.2.0 release (well short of the 2026.1.0 this crate links), so no
 // supported acquisition path exists. Reject at compile time rather than
@@ -78,10 +94,11 @@ pub enum Backend {
 ///
 /// On `aarch64-apple-darwin` the `openblas` feature selects OpenBLAS; the
 /// `accelerate` feature (default) selects Accelerate. Exactly one of the two
-/// must be enabled — a `compile_error!` above rejects the no-feature case. On
-/// `aarch64-unknown-linux-gnu` OpenBLAS is the only backend (no vDSP/vForce/
-/// Sparse exists on Linux) and both features are inert. On every other target
-/// Intel MKL is used and the feature flags are ignored.
+/// must be enabled — `compile_error!`s above reject both the no-feature and
+/// both-features cases. On `aarch64-unknown-linux-gnu` OpenBLAS is the only
+/// backend (no vDSP/vForce/Sparse exists on Linux) and both features are
+/// inert. On every other target Intel MKL is used and the feature flags are
+/// ignored.
 ///
 /// This is the *library-time* selector: its `#[cfg(...)]` reflects the target
 /// the crate is compiled for. Build scripts (which compile for the *host*)
@@ -120,7 +137,8 @@ pub fn backend() -> Backend {
 /// the real *target* triple. Pass those here to select the target's backend.
 ///
 /// Mirrors [`backend`]'s `#[cfg]` selection and rejects the same unsupported
-/// targets with an `Err` (rather than a compile error, since the build script
+/// targets — plus the no-feature and both-features `aarch64-apple-darwin`
+/// cases — with an `Err` (rather than a compile error, since the build script
 /// is host-compiled and cannot `compile_error!` for the target).
 pub fn backend_for_target(
     target_os: &str,
@@ -128,6 +146,14 @@ pub fn backend_for_target(
     target_env: Option<&str>,
 ) -> Result<Backend, &'static str> {
     match (target_os, target_arch, target_env) {
+        // Build scripts compile for the *host*, so the library `compile_error!`
+        // above cannot fire when cross-compiling from a non-macOS-aarch64 host
+        // — this Err (which panics the build script call site) is the
+        // build-script-time equivalent of that guard.
+        ("macos", "aarch64", _) if cfg!(feature = "accelerate") && cfg!(feature = "openblas") => Err(
+            "nuvai-mkl-src: aarch64-apple-darwin requires exactly one backend feature — \
+             `accelerate` and `openblas` are mutually exclusive; enable exactly one",
+        ),
         ("macos", "aarch64", _) => Ok(if cfg!(feature = "openblas") {
             Backend::OpenBlas
         } else {

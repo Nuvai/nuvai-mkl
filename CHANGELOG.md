@@ -22,6 +22,15 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ### Fixed
 
+- `nuvai-mkl-src` now fails loudly when both the `accelerate` and `openblas`
+  backend features are enabled on `aarch64-apple-darwin` instead of silently
+  resolving to OpenBLAS (issue #35). Enabling both features is as ambiguous as
+  enabling neither: the selection now triggers a `compile_error!` at library
+  compile time and an `Err` from `backend_for_target` at build-script time (the
+  host-compiled path used when cross-compiling, where the library
+  `compile_error!` cannot fire), matching ADR-0003 "selection is explicit,
+  never silent".
+
 - `blas` level-1 routines reject negative strides. A negative stride was
   previously accepted but walked *below* the slice (the wrapper passes the
   slice's first element as the CBLAS base), making heap out-of-bounds

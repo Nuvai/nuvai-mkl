@@ -43,11 +43,16 @@ type DssHandle = nuvai_mkl_sys::SparseOpaqueFactorization_Double;
 type DssHandle = ();
 
 /// A factorized DSS handle (double precision, real symmetric).
-// On `aarch64-unknown-linux-gnu` no `Dss` can be constructed, so the `handle`
-// field is never read there.
+// On `aarch64-unknown-linux-gnu` no `Dss` can be constructed, so the fields are
+// never read there.
 #[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
 pub struct Dss {
     handle: DssHandle,
+    /// Factored dimension (row/column count), captured at factor time. The
+    /// solve writes exactly `n` elements, so it is the only valid `rhs` length.
+    /// On Intel the handle is an opaque `*mut c_void` from which `n` cannot be
+    /// recovered later, so it must be stored here.
+    n: i32,
 }
 
 impl Dss {
@@ -106,7 +111,10 @@ impl Dss {
                 unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
                 return Err(Error::mkl(status, "_SparseFactorSymmetric_Double"));
             }
-            Ok(Self { handle: factor })
+            Ok(Self {
+                handle: factor,
+                n: n_rows,
+            })
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
@@ -167,35 +175,44 @@ impl Dss {
                 }
             }
 
-            Ok(Self { handle })
+            Ok(Self { handle, n: n_rows })
         }
     }
 
     /// Solve for a single right-hand side; returns the solution.
+    ///
+    /// `rhs` must hold exactly `n` values, where `n` is the dimension of the
+    /// factored matrix; any other length is
+    /// [`ErrorKind::InvalidArgument`](crate::error::ErrorKind::InvalidArgument).
     pub fn solve(&self, rhs: &[f64]) -> Result<Vec<f64>> {
+        // Validated ahead of the `cfg` dispatch so every backend enforces it
+        // identically: the solve writes exactly `self.n` values regardless of
+        // `rhs.len()`, so a short `rhs` would size the output buffer below what
+        // the backend writes (heap out-of-bounds write reachable from safe
+        // code), and a long one would silently solve against a prefix while
+        // returning a `Vec` sized to the caller's misleading length.
+        if rhs.len() != self.n as usize {
+            return Err(Error::invalid("DSS: rhs length mismatch"));
+        }
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         {
             // No DSS backend on aarch64-unknown-linux-gnu.
-            let _ = rhs;
             Err(Error::unsupported_linux_aarch64("DSS"))
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let n = self.handle.symbolicFactorization.rowCount;
-            if rhs.len() != n as usize {
-                return Err(Error::invalid("DSS: rhs length mismatch"));
-            }
-            crate::pardiso::solve_with_factor(&self.handle, n, rhs)
+            crate::pardiso::solve_with_factor(&self.handle, self.n, rhs)
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
             let n_rhs = 1i32;
             let opt_solve = 0i32; // normal (non-transpose, non-conjugate) solve
-            let mut sol = vec![0.0f64; rhs.len()];
+            let mut sol = vec![0.0f64; self.n as usize];
             let mut handle = self.handle; // local copy: DSS takes the handle by address
-            // SAFETY: `handle` is a valid factorized DSS handle; `rhs` and `sol`
-            // are valid slices and `sol` is sized to `rhs.len()` (single RHS of
-            // `n` values), so the solve reads/writes within bounds.
+            // SAFETY: `handle` is a valid factorized DSS handle; `sol` is sized
+            // to the same factored `n` that `dss_solve_real_` writes, and `rhs`
+            // holds exactly `n` readable values (checked above), so the solve
+            // reads/writes within bounds.
             let status = unsafe {
                 nuvai_mkl_sys::dss_solve_real_(
                     &mut handle,

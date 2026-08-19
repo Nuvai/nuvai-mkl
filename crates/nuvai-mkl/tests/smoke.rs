@@ -656,6 +656,44 @@ fn dss_solve_2x2() {
 
 #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
+fn dss_solve_rejects_rhs_length_mismatch() {
+    // #21: the backend writes exactly `n` values into the solution buffer
+    // regardless of `rhs.len()`. Pre-fix the Intel arm sized that buffer to
+    // `rhs.len()`, so an undersized RHS drove a heap out-of-bounds *write*
+    // reachable from safe code, and an oversized one returned a `Vec` padded
+    // past the `n` values actually solved for.
+    //
+    // Same SPD matrix as `dss_solve_2x2`: A = [[4,1],[1,3]], so n == 2.
+    let row_index = [0i32, 2, 3];
+    let columns = [0i32, 1, 1];
+    let values = [4.0f64, 1.0, 3.0];
+    let dss = dss::Dss::factor_symmetric(&row_index, &columns, &values).unwrap();
+
+    // `InvalidArgument` specifically, not merely `is_err()`: it proves the
+    // safe-Rust guard rejected the call before any pointer reached the backend.
+    // A corrupting call that happened to return a non-zero MKL status would
+    // satisfy `is_err()` while the UB still occurred.
+    use nuvai_mkl::error::ErrorKind;
+
+    // Undersized: pre-fix this sized `sol` to 1 while DSS wrote 2.
+    let err = dss.solve(&[5.0f64]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+
+    // Oversized: only the first 2 values are ever solved for.
+    let err = dss.solve(&[5.0f64, 4.0, 9.0]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+
+    // Empty.
+    let err = dss.solve(&[]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+
+    // The valid-length path still solves correctly.
+    let x = dss.solve(&[5.0f64, 4.0]).unwrap();
+    assert_close64(&x, &[1.0, 1.0], 1e-9);
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
 fn vsl_uniform_rejects_empty_range() {
     let stream = vsl::Stream::new(7).unwrap();
     // Empty (a == b), inverted (a > b), and NaN ranges must error, not panic:

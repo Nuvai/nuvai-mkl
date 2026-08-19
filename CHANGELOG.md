@@ -26,3 +26,13 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   previously accepted but walked *below* the slice (the wrapper passes the
   slice's first element as the CBLAS base), making heap out-of-bounds
   reads/writes reachable from safe code.
+
+- `Dss::solve` validates `rhs.len()` against the factored dimension `n` on
+  every backend (issue #21). The Intel arm sized the solution buffer to
+  `rhs.len()` while `dss_solve_real_` writes `n` elements, so an undersized
+  RHS was a heap out-of-bounds write reachable from safe code and an oversized
+  one returned a `Vec` padded past the values actually solved for. `n` is now
+  captured at factor time (the Intel DSS handle is opaque, so it cannot be
+  recovered at solve time) and the check runs ahead of the `cfg` dispatch
+  rather than only on the aarch64 arm. A mismatched length now returns
+  `ErrorKind::InvalidArgument`.

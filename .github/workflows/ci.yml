@@ -50,10 +50,9 @@ jobs:
     name: aarch64-apple-darwin (OpenBLAS)
     runs-on: macos-14-xlarge # public Apple Silicon runner (arm64)
     env:
-      # openblas is keg-only, so `-lopenblas` needs an explicit search path.
-      RUSTFLAGS: "-L /opt/homebrew/opt/openblas/lib"
-      # Same as the Accelerate job: vDSP's interleaved-complex DFT (task #13)
-      # is macOS 12.0+, so pin the deployment target for the linker.
+      # vDSP's interleaved-complex DFT (task #13) is macOS 12.0+, so pin the
+      # deployment target for the linker. No RUSTFLAGS: the keg-only OpenBLAS
+      # search path is emitted by nuvai-mkl-src's build.rs (`rustc-link-search`).
       MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v4

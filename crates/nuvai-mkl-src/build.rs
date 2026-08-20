@@ -24,6 +24,9 @@ fn main() {
     println!("cargo:rerun-if-changed=src/backend.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENBLAS");
     println!("cargo:rerun-if-env-changed=OPENBLAS_ROOT");
+    // The macOS `openblas` fallback probes the Homebrew keg's existence on disk,
+    // so re-run when it appears or disappears.
+    println!("cargo:rerun-if-changed=/opt/homebrew/opt/openblas/lib");
 
     // docs.rs has no network and no MKL; skip linking there.
     if std::env::var("DOCS_RS").is_ok() {
@@ -54,16 +57,20 @@ fn main() {
             if target_os == "macos" {
                 // Homebrew installs openblas keg-only, so `-lopenblas` needs an
                 // explicit search path. Prefer OPENBLAS_ROOT (conda/pip) and
-                // fall back to the Homebrew keg on Apple Silicon. This must be a
-                // `rustc-link-search` (not RUSTFLAGS `-L`) because Cargo does not
-                // forward RUSTFLAGS to build-script linking, and the `-lopenblas`
-                // above propagates to build scripts too.
-                let lib_dir = std::env::var("OPENBLAS_ROOT")
-                    .ok()
-                    .filter(|root| !root.trim().is_empty())
-                    .map(|root| format!("{root}/lib"))
-                    .unwrap_or_else(|| "/opt/homebrew/opt/openblas/lib".to_string());
-                println!("cargo:rustc-link-search=native={lib_dir}");
+                // fall back to the Homebrew keg on Apple Silicon — but only if
+                // the keg actually exists, so a MacPorts `/opt/local`, a
+                // `/usr/local`, or a manual-build install resolves via the default
+                // search path instead of being silently shadowed by a stale
+                // package-manager path. This must be a `rustc-link-search` (not
+                // RUSTFLAGS `-L`) because Cargo does not forward RUSTFLAGS to
+                // build-script linking, and the `-lopenblas` above propagates to
+                // build scripts too.
+                if let Some(lib_dir) = openblas_root_lib_dir().or_else(|| {
+                    let keg = "/opt/homebrew/opt/openblas/lib";
+                    std::path::Path::new(keg).is_dir().then(|| keg.to_string())
+                }) {
+                    println!("cargo:rustc-link-search=native={lib_dir}");
+                }
                 println!("cargo:rustc-link-lib=framework=Accelerate");
             }
             // Linux-aarch64: OpenBLAS is the only backend and covers only
@@ -77,10 +84,9 @@ fn main() {
             // emits the rpath instead.
             if target_os == "linux"
                 && target_arch == "aarch64"
-                && let Ok(root) = std::env::var("OPENBLAS_ROOT")
-                && !root.trim().is_empty()
+                && let Some(lib_dir) = openblas_root_lib_dir()
             {
-                println!("cargo:rustc-link-search=native={root}/lib");
+                println!("cargo:rustc-link-search=native={lib_dir}");
             }
         }
     }

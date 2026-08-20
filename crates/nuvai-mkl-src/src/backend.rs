@@ -161,6 +161,24 @@ pub const fn backend_tag(backend: Backend) -> &'static str {
     }
 }
 
+/// Resolve the OpenBLAS `lib` directory from `OPENBLAS_ROOT`, if set.
+///
+/// `OPENBLAS_ROOT` is the explicit override for a non-default OpenBLAS install
+/// (conda/pip): a set, non-empty prefix contributes `{root}/lib` to the link
+/// search path (emitted by this crate's build script) and to the runtime rpath
+/// (emitted by `nuvai-mkl`'s build script, which owns the test/example
+/// binaries). Returns `None` when the variable is unset or empty, meaning
+/// "resolve `-lopenblas` via the toolchain's default search path". Selection is
+/// explicit, never silent (ADR-0003): this helper infers no package-manager-
+/// specific path — the macOS Homebrew-keg default is applied by the caller and
+/// gated on the keg's existence on disk.
+pub fn openblas_root_lib_dir() -> Option<String> {
+    std::env::var("OPENBLAS_ROOT")
+        .ok()
+        .filter(|root| !root.trim().is_empty())
+        .map(|root| format!("{root}/lib"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

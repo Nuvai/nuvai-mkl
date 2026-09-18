@@ -37,6 +37,9 @@ rand_distr = "0.6.0"
 
 [build-dependencies]
 nuvai-mkl-src = { workspace = true }
+# Compiles `build/force_runtime.c` for the x86_64 Linux arm of `build.rs`; see
+# that file for why an object file is needed rather than a linker flag.
+cc = "1"
 
 # docs.rs has no network and no MKL; build with no features so the
 # docs.rs build never pulls acquisition/linking (build.rs also short-circuits on DOCS_RS).

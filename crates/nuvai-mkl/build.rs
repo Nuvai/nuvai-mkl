@@ -1,10 +1,17 @@
-//! Linker flags for `nuvai-mkl`'s own test/example/bench binaries.
+//! Linker flags (and one compiled object) for `nuvai-mkl`'s own
+//! test/example/bench binaries.
 //!
 //! `rustc-link-arg` is scoped to the targets of the package that emits it, so
 //! the runtime rpath (and the `--no-as-needed` around libm) must be emitted
 //! here — `nuvai-mkl-src` emits the *propagating* directives (`rustc-link-lib`
 //! / `rustc-link-search`), which reach every downstream link, but its
 //! `rustc-link-arg` would only ever apply to its own (nonexistent) binaries.
+//!
+//! The x86_64 Linux arm additionally compiles `build/force_runtime.c` and
+//! links the resulting object into those binaries. MKL's shared objects need
+//! `omp_*` and `log`/`exp`/… in the process-global scope but declare no
+//! DT_NEEDED for them, and no linker flag reliably forces them in — see that
+//! file for the full reasoning.
 //!
 //! The aarch64 fallbacks carry no Intel MKL, so `locate()` (which panics on
 //! an aarch64 host) is only ever called for the x86_64 Linux/Windows targets.
@@ -50,9 +57,21 @@ fn main() {
             // library build script cannot force the final link's min OS.
             println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=12.0");
         }
-        // Intel x86_64 Linux: keep libm in the final link (conda's
-        // `libmkl_core.so.3` references `log`/`exp`/`sin`/… without a
-        // DT_NEEDED) and add the runtime rpath to the conda MKL shared objects.
+        // Intel x86_64 Linux: keep libm and the OpenMP runtime in the final
+        // link (conda's `libmkl_core.so.3` references `log`/`exp`/`sin`/… and
+        // `libmkl_intel_thread.so.3` references `omp_*`, both without a
+        // DT_NEEDED of their own), and add the runtime rpath to the conda MKL
+        // shared objects.
+        //
+        // Two mechanisms, because no single one covers every linker. The flags
+        // below are what GNU ld and lld honour; mold records `-l` inputs by
+        // *resolved file* and discards a repeat mention — however it is spelled
+        // (`-liomp5`, `-l:libiomp5.so`, or a bare path) — before it ever
+        // consults `--no-as-needed`, then prunes the library as unreferenced
+        // (issue #44: the test binary aborted at load time with
+        // `undefined symbol: omp_in_parallel`). What mold does honour is an
+        // undefined symbol from a regular object file, which is what
+        // `build/force_runtime.c` supplies.
         ("linux", "x86_64") => {
             let info = nuvai_mkl_src::locate();
             println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-lm,--as-needed");
@@ -65,6 +84,19 @@ fn main() {
                 // test/example objects never reference it directly, so plain
                 // `--as-needed` would drop it from DT_NEEDED.
                 println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-liomp5,--as-needed");
+            }
+
+            // Pass the compiled objects to the linker directly rather than via
+            // `rustc-link-lib=static`: an archive member is only pulled in when
+            // something references a symbol it *defines*, and nothing does —
+            // this object exists for the symbols it leaves undefined.
+            let force_c = std::path::PathBuf::from(
+                std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"),
+            )
+            .join("build/force_runtime.c");
+            println!("cargo:rerun-if-changed={}", force_c.display());
+            for obj in cc::Build::new().file(&force_c).compile_intermediates() {
+                println!("cargo:rustc-link-arg={}", obj.display());
             }
         }
         // Intel x86_64 Windows: no rpath; the loader resolves `mkl_rt.3.dll`

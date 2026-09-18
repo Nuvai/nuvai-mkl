@@ -80,8 +80,8 @@ fn main() {
             // test/example binaries (`nuvai-mkl/build.rs`) emits the rpath
             // instead. macOS needs none anyway: the Homebrew dylib carries an
             // absolute install_name.
-            let aarch64_fallback = (target_os == "linux" && target_arch == "aarch64")
-                || target_os == "macos";
+            let aarch64_fallback =
+                (target_os == "linux" && target_arch == "aarch64") || target_os == "macos";
             if aarch64_fallback
                 && let Ok(root) = std::env::var("OPENBLAS_ROOT")
                 && !root.trim().is_empty()

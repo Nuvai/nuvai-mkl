@@ -482,6 +482,111 @@ fn crate_path_probe() {
     }
 }
 
+
+/// Validates the *mechanism* of the proposed fix without touching `src/`:
+/// if length 8 were routed to the split-complex family instead of the
+/// interleaved one, the crate would run exactly this sequence — create both
+/// directions, forward a delta, then inverse and rescale. Run on the failing
+/// macOS 14 image, this says whether the fallback is viable there.
+fn split_fallback_probe() {
+    out!("--- proposed fix path: split-complex fallback at n=8, both directions, both precisions ---");
+    for single in [true, false] {
+        let tag = if single { "f32" } else { "f64" };
+        let (fwd, inv) = unsafe {
+            if single {
+                (
+                    vDSP_DFT_zop_CreateSetup(std::ptr::null_mut(), 8, vDSP_DFT_FORWARD),
+                    vDSP_DFT_zop_CreateSetup(std::ptr::null_mut(), 8, vDSP_DFT_INVERSE),
+                )
+            } else {
+                (
+                    vDSP_DFT_zop_CreateSetupD(std::ptr::null_mut(), 8, vDSP_DFT_FORWARD),
+                    vDSP_DFT_zop_CreateSetupD(std::ptr::null_mut(), 8, vDSP_DFT_INVERSE),
+                )
+            }
+        };
+        if fwd.is_null() || inv.is_null() {
+            out!("  {tag}: split setup NULL (forward={fwd:p} inverse={inv:p})");
+            continue;
+        }
+        // forward a unit impulse
+        let ir = [1.0f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let ii = [0.0f64; 8];
+        let (mut or32, mut oi32) = (vec![0.0f32; 8], vec![0.0f32; 8]);
+        let (mut or64, mut oi64) = (vec![0.0f64; 8], vec![0.0f64; 8]);
+        unsafe {
+            if single {
+                let ir32: Vec<f32> = ir.iter().map(|&v| v as f32).collect();
+                let ii32: Vec<f32> = ii.iter().map(|&v| v as f32).collect();
+                vDSP_DFT_Execute(fwd, ir32.as_ptr(), ii32.as_ptr(), or32.as_mut_ptr(), oi32.as_mut_ptr());
+            } else {
+                vDSP_DFT_ExecuteD(fwd, ir.as_ptr(), ii.as_ptr(), or64.as_mut_ptr(), oi64.as_mut_ptr());
+            }
+        }
+        let fwd_out: Vec<String> = if single {
+            (0..8).map(|k| format!("({}, {})", or32[k], oi32[k])).collect()
+        } else {
+            (0..8).map(|k| format!("({}, {})", or64[k], oi64[k])).collect()
+        };
+        let fwd_max_imag = if single {
+            oi32.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+        } else {
+            oi64.iter().fold(0.0f64, |m, v| m.max(v.abs())) as f32
+        };
+        out!("  {tag}: forward(delta) = {}", fwd_out.join(" "));
+        out!("  {tag}: max |imag| = {fwd_max_imag:e} (must be ~0)");
+
+        // inverse the all-ones spectrum with the explicit 1/n scale the crate applies
+        let (mut br32, mut bi32) = (vec![0.0f32; 8], vec![0.0f32; 8]);
+        let (mut br64, mut bi64) = (vec![0.0f64; 8], vec![0.0f64; 8]);
+        unsafe {
+            if single {
+                let ones: Vec<f32> = vec![1.0; 8];
+                let zeros: Vec<f32> = vec![0.0; 8];
+                vDSP_DFT_Execute(inv, ones.as_ptr(), zeros.as_ptr(), br32.as_mut_ptr(), bi32.as_mut_ptr());
+            } else {
+                let ones: Vec<f64> = vec![1.0; 8];
+                let zeros: Vec<f64> = vec![0.0; 8];
+                vDSP_DFT_ExecuteD(inv, ones.as_ptr(), zeros.as_ptr(), br64.as_mut_ptr(), bi64.as_mut_ptr());
+            }
+        }
+        let scale32 = 1.0f32 / 8.0;
+        let roundtrip32: Vec<f32> = (0..8).map(|k| br32[k] * scale32).collect();
+        let roundtrip32_imag: Vec<f32> = (0..8).map(|k| bi32[k] * scale32).collect();
+        if single {
+            out!("  {tag}: backward(ones)/8 real = {roundtrip32:?}");
+            out!("  {tag}: backward(ones)/8 imag = {roundtrip32_imag:?}");
+            out!(
+                "  {tag}: round-trip ok = {} (expect [1,0,0,0,0,0,0,0])",
+                (roundtrip32[0] - 1.0).abs() < 1e-5
+                    && roundtrip32[1..].iter().all(|v| v.abs() < 1e-5)
+                    && roundtrip32_imag.iter().all(|v| v.abs() < 1e-5)
+            );
+        } else {
+            let scale64 = 1.0f64 / 8.0;
+            let rt64: Vec<f64> = (0..8).map(|k| br64[k] * scale64).collect();
+            let rti64: Vec<f64> = (0..8).map(|k| bi64[k] * scale64).collect();
+            out!("  {tag}: backward(ones)/8 real = {rt64:?}");
+            out!("  {tag}: backward(ones)/8 imag = {rti64:?}");
+            out!(
+                "  {tag}: round-trip ok = {} (expect [1,0,0,0,0,0,0,0])",
+                (rt64[0] - 1.0).abs() < 1e-9
+                    && rt64[1..].iter().all(|v| v.abs() < 1e-9)
+                    && rti64.iter().all(|v| v.abs() < 1e-9)
+            );
+        }
+        unsafe {
+            if single {
+                vDSP_DFT_DestroySetup(fwd);
+                vDSP_DFT_DestroySetup(inv);
+            } else {
+                vDSP_DFT_DestroySetupD(fwd);
+                vDSP_DFT_DestroySetupD(inv);
+            }
+        }
+    }
+}
+
 #[test]
 fn diag53() {
     out!("===== DIAG-53 FFT/vDSP evidence =====");
@@ -491,6 +596,8 @@ fn diag53() {
     out!("STAGE: crate_path_probe done");
     canary_oob(8);
     out!("STAGE: canary_oob done");
+    split_fallback_probe();
+    out!("STAGE: split_fallback_probe done");
 
     out!("--- setup acceptance + correctness vs analytic DFT (forward, complextocomplex) ---");
     out!(

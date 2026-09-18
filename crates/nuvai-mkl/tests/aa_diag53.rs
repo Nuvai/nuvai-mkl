@@ -8,6 +8,15 @@
 
 use std::f64::consts::PI;
 
+/// Print *and flush*, so output survives a hard abort mid-run (libtest captures
+/// stdout, and a SIGABRT discards whatever is still buffered).
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        println!($($arg)*);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }};
+}
+
 use nuvai_mkl::fft::{FftPlan, MKL_Complex16, MKL_Complex8};
 use nuvai_mkl_sys::{
     vDSP_DFT_DestroySetup, vDSP_DFT_DestroySetupD, vDSP_DFT_Execute, vDSP_DFT_ExecuteD,
@@ -188,7 +197,7 @@ fn crate64_err(n: usize) -> Option<f64> {
 /// and dump the resulting linear map M[k][j], alongside the analytic
 /// e^{-2*pi*i*j*k/n}. This characterises *what* the runtime actually computed.
 fn dump_matrix(n: usize) {
-    println!("--- basis-vector map, interleaved f32, n={n} (rows k = output bin, cols j = input index) ---");
+    out!("--- basis-vector map, interleaved f32, n={n} (rows k = output bin, cols j = input index) ---");
     unsafe {
         let setup = vDSP_DFT_Interleaved_CreateSetup(
             std::ptr::null_mut(),
@@ -197,7 +206,7 @@ fn dump_matrix(n: usize) {
             vDSP_DFT_Interleaved_ComplextoComplex,
         );
         if setup.is_null() {
-            println!("  setup NULL at n={n}");
+            out!("  setup NULL at n={n}");
             return;
         }
         for j in 0..n {
@@ -225,7 +234,7 @@ fn dump_matrix(n: usize) {
                 .filter(|(_, (g, w))| (g.0 - w.0).abs() > 1e-4 || (g.1 - w.1).abs() > 1e-4)
                 .map(|(k, (g, _))| format!("k{k}:({:.4},{:.4})", g.0, g.1))
                 .collect();
-            println!("  j={j}: max_err={e:.3e} {}", if flagged.is_empty() {
+            out!("  j={j}: max_err={e:.3e} {}", if flagged.is_empty() {
                 "all bins OK".to_string()
             } else {
                 format!("MISMATCH {}", flagged.join(" "))
@@ -239,8 +248,8 @@ fn dump_matrix(n: usize) {
 fn dump_delta(n: usize) {
     let (mut re, im) = (vec![0.0f64; n], vec![0.0f64; n]);
     re[0] = 1.0;
-    println!("--- unit-impulse (delta at index 0) full output, n={n} ---");
-    println!("  expected: every bin = (1.0, 0.0)");
+    out!("--- unit-impulse (delta at index 0) full output, n={n} ---");
+    out!("  expected: every bin = (1.0, 0.0)");
     unsafe {
         let setup = vDSP_DFT_Interleaved_CreateSetup(
             std::ptr::null_mut(),
@@ -249,7 +258,7 @@ fn dump_delta(n: usize) {
             vDSP_DFT_Interleaved_ComplextoComplex,
         );
         if setup.is_null() {
-            println!("  interleaved f32 setup NULL");
+            out!("  interleaved f32 setup NULL");
         } else {
             let input: Vec<DSPComplex> =
                 (0..n).map(|j| DSPComplex { real: re[j] as f32, imag: im[j] as f32 }).collect();
@@ -258,7 +267,7 @@ fn dump_delta(n: usize) {
             vDSP_DFT_Interleaved_DestroySetup(setup);
             let s: Vec<String> =
                 out.iter().map(|c| format!("({}, {})", c.real, c.imag)).collect();
-            println!("  interleaved f32 raw: {}", s.join(" "));
+            out!("  interleaved f32 raw: {}", s.join(" "));
         }
 
         let setup = vDSP_DFT_Interleaved_CreateSetupD(
@@ -268,7 +277,7 @@ fn dump_delta(n: usize) {
             vDSP_DFT_Interleaved_ComplextoComplex,
         );
         if setup.is_null() {
-            println!("  interleaved f64 setup NULL");
+            out!("  interleaved f64 setup NULL");
         } else {
             let input: Vec<DSPDoubleComplex> =
                 (0..n).map(|j| DSPDoubleComplex { real: re[j], imag: im[j] }).collect();
@@ -277,12 +286,12 @@ fn dump_delta(n: usize) {
             vDSP_DFT_Interleaved_DestroySetupD(setup);
             let s: Vec<String> =
                 out.iter().map(|c| format!("({}, {})", c.real, c.imag)).collect();
-            println!("  interleaved f64 raw: {}", s.join(" "));
+            out!("  interleaved f64 raw: {}", s.join(" "));
         }
 
         let setup = vDSP_DFT_zop_CreateSetup(std::ptr::null_mut(), n as _, vDSP_DFT_FORWARD);
         if setup.is_null() {
-            println!("  split f32 setup NULL");
+            out!("  split f32 setup NULL");
         } else {
             let ir: Vec<f32> = re.iter().map(|&v| v as f32).collect();
             let ii: Vec<f32> = im.iter().map(|&v| v as f32).collect();
@@ -290,7 +299,7 @@ fn dump_delta(n: usize) {
             vDSP_DFT_Execute(setup, ir.as_ptr(), ii.as_ptr(), or.as_mut_ptr(), oi.as_mut_ptr());
             vDSP_DFT_DestroySetup(setup);
             let s: Vec<String> = (0..n).map(|k| format!("({}, {})", or[k], oi[k])).collect();
-            println!("  split f32 raw:       {}", s.join(" "));
+            out!("  split f32 raw:       {}", s.join(" "));
         }
     }
     // What the crate's own public API returns for the same input.
@@ -301,13 +310,13 @@ fn dump_delta(n: usize) {
         let mut out = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; n];
         plan.forward_c32(&input, &mut out).unwrap();
         let s: Vec<String> = out.iter().map(|c| format!("({}, {})", c.real, c.imag)).collect();
-        println!("  crate forward_c32:   {}", s.join(" "));
+        out!("  crate forward_c32:   {}", s.join(" "));
     }
 }
 
 /// Is the interleaved result sensitive to buffer alignment at n=8?
 fn dump_alignment(n: usize) {
-    println!("--- alignment sensitivity, interleaved f32, n={n} ---");
+    out!("--- alignment sensitivity, interleaved f32, n={n} ---");
     let (re, im) = probe_input(n);
     for off in [0usize, 1, 2, 3] {
         let mut input = vec![DSPComplex { real: 0.0, imag: 0.0 }; n + 4];
@@ -328,7 +337,7 @@ fn dump_alignment(n: usize) {
                 vDSP_DFT_Interleaved_ComplextoComplex,
             );
             if setup.is_null() {
-                println!("  offset {off}: setup NULL");
+                out!("  offset {off}: setup NULL");
                 return;
             }
             vDSP_DFT_Interleaved_Execute(setup, ip, op);
@@ -339,7 +348,7 @@ fn dump_alignment(n: usize) {
                 ((*op.add(k)).real as f64, (*op.add(k)).imag as f64)
             })
             .collect();
-        println!(
+        out!(
             "  input ptr {:p} (align {}), err = {}",
             ip,
             (ip as usize) % 16,
@@ -350,7 +359,7 @@ fn dump_alignment(n: usize) {
 
 /// Which direction was actually used? Forward vs inverse on the same probe.
 fn dump_directions(n: usize) {
-    println!("--- direction check, interleaved f32, n={n} ---");
+    out!("--- direction check, interleaved f32, n={n} ---");
     let (re, im) = probe_input(n);
     let analytic = dft_analytic(&re, &im);
     for (name, dir) in [("FORWARD", vDSP_DFT_FORWARD), ("INVERSE", vDSP_DFT_INVERSE)] {
@@ -362,7 +371,7 @@ fn dump_directions(n: usize) {
                 vDSP_DFT_Interleaved_ComplextoComplex,
             );
             if setup.is_null() {
-                println!("  {name}: setup NULL");
+                out!("  {name}: setup NULL");
                 continue;
             }
             let input: Vec<DSPComplex> =
@@ -372,7 +381,7 @@ fn dump_directions(n: usize) {
             vDSP_DFT_Interleaved_DestroySetup(setup);
             let got: Vec<(f64, f64)> =
                 out.iter().map(|c| (c.real as f64, c.imag as f64)).collect();
-            println!("  {name}: err vs analytic = {:.3e}", max_err(&got, &analytic));
+            out!("  {name}: err vs analytic = {:.3e}", max_err(&got, &analytic));
         }
     }
     let _ = (re, im);
@@ -380,12 +389,12 @@ fn dump_directions(n: usize) {
 
 #[test]
 fn diag53() {
-    println!("===== DIAG-53 FFT/vDSP evidence =====");
-    println!("os/arch: {} / {}", std::env::consts::OS, std::env::consts::ARCH);
-    println!("{}", env_info());
+    out!("===== DIAG-53 FFT/vDSP evidence =====");
+    out!("os/arch: {} / {}", std::env::consts::OS, std::env::consts::ARCH);
+    out!("{}", env_info());
 
-    println!("--- setup acceptance + correctness vs analytic DFT (forward, complextocomplex) ---");
-    println!(
+    out!("--- setup acceptance + correctness vs analytic DFT (forward, complextocomplex) ---");
+    out!(
         "{:>5} {:>10} {:>10} {:>10} {:>10} {:>10} {:>12}",
         "len", "ilv32_set", "ilv64_set", "zop32_set", "zop64_set", "crate_ok", "crate32_err"
     );
@@ -431,7 +440,7 @@ fn diag53() {
             }
             !s.is_null()
         };
-        println!(
+        out!(
             "{:>5} {:>10} {:>10} {:>10} {:>10} {:>10} {:>12}",
             n,
             ilv32,
@@ -443,13 +452,13 @@ fn diag53() {
         );
     }
 
-    println!("--- correctness errors (small = correct) ---");
-    println!(
+    out!("--- correctness errors (small = correct) ---");
+    out!(
         "{:>5} {:>20} {:>20} {:>20} {:>20} {:>20}",
         "len", "ilv32", "ilv64", "zop32", "zop64", "crate64_err"
     );
     for n in [8usize, 12, 16, 20, 24, 32, 36, 40, 48, 60, 64, 100, 120, 128, 256] {
-        println!(
+        out!(
             "{:>5} {:>20} {:>20} {:>20} {:>20} {:>20}",
             n,
             fmt_err(ilv32_err(n)),
@@ -468,6 +477,6 @@ fn diag53() {
     dump_directions(8);
     dump_directions(24);
 
-    println!("===== DIAG-53 END =====");
+    out!("===== DIAG-53 END =====");
     panic!("DIAG-53: intentional panic to surface the captured stdout above");
 }

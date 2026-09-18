@@ -42,6 +42,13 @@ jobs:
       - name: cargo check
         run: cargo check --target aarch64-apple-darwin --workspace
 
+      # DIAG-53 (issue #53): throwaway step on a throwaway branch. `--nocapture`
+      # so the instrumentation's stdout reaches the log even if the process
+      # aborts (it does: SIGABRT on the macos-14 image).
+      - name: DIAG-53 FFT/vDSP evidence (never merged)
+        run: cargo test --target aarch64-apple-darwin -p nuvai-mkl --test aa_diag53 -- --nocapture
+        continue-on-error: true
+
       - name: cargo test
         run: cargo test --target aarch64-apple-darwin --workspace --no-fail-fast
 

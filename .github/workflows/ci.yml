@@ -12,9 +12,17 @@ env:
 jobs:
   # Apple Silicon: every domain runs on Accelerate + rand (task #3). The
   # runner is Apple Silicon so aarch64-apple-darwin is the native host target.
+  #
+  # `macos-14` is the *standard* arm64 image and is free on a public repo. Do
+  # NOT switch this to `macos-14-xlarge`: that is a *larger* runner, which
+  # GitHub bills per-minute even on public repositories. This org's spending
+  # limit blocks them, so the job is never provisioned — it fails in ~7s having
+  # executed zero steps, with the annotation "recent account payments have
+  # failed or your spending limit needs to be increased". Standard runners buy
+  # the arm64 coverage this job exists for at no cost.
   aarch64-darwin:
     name: aarch64-apple-darwin (Accelerate)
-    runs-on: macos-14-xlarge # public Apple Silicon runner (arm64)
+    runs-on: macos-14
     env:
       # The FFT backend uses vDSP's interleaved-complex DFT, which is
       # `API_AVAILABLE(macos(12.0))` (task #13); pin the deployment target so
@@ -48,10 +56,19 @@ jobs:
   # --no-default-features path that must fail loudly without a backend.
   aarch64-darwin-openblas:
     name: aarch64-apple-darwin (OpenBLAS)
-    runs-on: macos-14-xlarge # public Apple Silicon runner (arm64)
+    # Standard arm64 image, same reasoning as `aarch64-darwin` above — see the
+    # note there before reaching for an `-xlarge` label.
+    runs-on: macos-14
     env:
       # openblas is keg-only, so `-lopenblas` needs an explicit search path.
-      RUSTFLAGS: "-L /opt/homebrew/opt/openblas/lib"
+      # It must be supplied via OPENBLAS_ROOT — which `nuvai-mkl-src/build.rs`
+      # turns into `cargo:rustc-link-search` — and NOT via RUSTFLAGS. This
+      # crate is a `[build-dependencies]` entry of `nuvai-mkl` and
+      # `nuvai-mkl-sys`, so the propagating `rustc-link-lib` also lands on
+      # their *build-script* binaries, and Cargo does not apply RUSTFLAGS to
+      # host units: a `RUSTFLAGS: -L ...` never reaches the link that fails,
+      # which is why this job could not build before.
+      OPENBLAS_ROOT: /opt/homebrew/opt/openblas
       # Same as the Accelerate job: vDSP's interleaved-complex DFT (task #13)
       # is macOS 12.0+, so pin the deployment target for the linker.
       MACOSX_DEPLOYMENT_TARGET: "12.0"

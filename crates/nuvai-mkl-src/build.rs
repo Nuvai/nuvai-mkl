@@ -54,17 +54,35 @@ fn main() {
             if target_os == "macos" {
                 println!("cargo:rustc-link-lib=framework=Accelerate");
             }
+            // Both aarch64 fallbacks need the search path, for different reasons.
+            //
             // Linux-aarch64: OpenBLAS is the only backend and covers only
             // BLAS/LAPACK, so there is no Accelerate to link. A distro
             // `libopenblas-dev` lives in the system search path; an explicit
             // OPENBLAS_ROOT (e.g. a conda/pip install) contributes its `lib`
-            // dir to the link search path. The runtime *rpath* is deliberately
-            // not emitted here: `cargo:rustc-link-arg` only applies to the
-            // emitting package's own targets, and this crate owns no binaries —
-            // the crate that owns the test/example binaries (`nuvai-mkl/build.rs`)
-            // emits the rpath instead.
-            if target_os == "linux"
-                && target_arch == "aarch64"
+            // dir to the link search path.
+            //
+            // macOS: Homebrew's `openblas` is keg-only, so it is *not* symlinked
+            // into `/opt/homebrew/lib` and a bare `-lopenblas` cannot resolve —
+            // the explicit prefix is the only way to find it. This is not
+            // optional polish: because this crate is a `[build-dependencies]`
+            // entry of `nuvai-mkl` and `nuvai-mkl-sys`, the propagating
+            // `rustc-link-lib` above also lands on *their build-script*
+            // binaries, and `RUSTFLAGS` is not applied to host units — so a
+            // caller-side `-L` (which is what CI passed) never reaches the link
+            // that fails. Before this, `--features openblas` on
+            // aarch64-apple-darwin died with `ld: library 'openblas' not found`
+            // while linking the build script.
+            //
+            // The runtime *rpath* is deliberately not emitted here:
+            // `cargo:rustc-link-arg` only applies to the emitting package's own
+            // targets, and this crate owns no binaries — the crate that owns the
+            // test/example binaries (`nuvai-mkl/build.rs`) emits the rpath
+            // instead. macOS needs none anyway: the Homebrew dylib carries an
+            // absolute install_name.
+            let aarch64_fallback =
+                (target_os == "linux" && target_arch == "aarch64") || target_os == "macos";
+            if aarch64_fallback
                 && let Ok(root) = std::env::var("OPENBLAS_ROOT")
                 && !root.trim().is_empty()
             {

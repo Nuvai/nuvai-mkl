@@ -237,7 +237,7 @@ fn dump_matrix(n: usize) {
 
 /// Dump the full output array for the unit impulse (the failing test's input).
 fn dump_delta(n: usize) {
-    let (mut re, mut im) = (vec![0.0f64; n], vec![0.0f64; n]);
+    let (mut re, im) = (vec![0.0f64; n], vec![0.0f64; n]);
     re[0] = 1.0;
     println!("--- unit-impulse (delta at index 0) full output, n={n} ---");
     println!("  expected: every bin = (1.0, 0.0)");

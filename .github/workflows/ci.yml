@@ -43,7 +43,7 @@ jobs:
         run: cargo check --target aarch64-apple-darwin --workspace
 
       - name: cargo test
-        run: cargo test --target aarch64-apple-darwin --workspace
+        run: cargo test --target aarch64-apple-darwin --workspace --no-fail-fast
 
       - name: cargo clippy
         # No `-D warnings`: the toolchain is floating nightly, and a new lint
@@ -90,7 +90,7 @@ jobs:
         run: cargo check --target aarch64-apple-darwin --workspace --no-default-features --features openblas
 
       - name: cargo test (openblas)
-        run: cargo test --target aarch64-apple-darwin --workspace --no-default-features --features openblas
+        run: cargo test --target aarch64-apple-darwin --workspace --no-default-features --features openblas --no-fail-fast
 
   # ARM64 Linux: OpenBLAS is the sole backend (BLAS/LAPACK only; FFT/VML/VSL/
   # sparse/PARDISO/DSS return ErrorKind::Unsupported). The runner is ARM64 so

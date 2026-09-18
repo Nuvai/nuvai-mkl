@@ -882,6 +882,47 @@ fn pardiso_solve_3x3() {
     assert_close64(&x, &[1.0, 2.0, 3.0], 1e-9);
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn pardiso_rejects_empty_ia() {
+    // #26: `n` was derived as `ia.len() - 1`, evaluated in `usize`, so an empty
+    // `ia` underflowed the subtraction *before* the `as i32` cast — a panic
+    // under `overflow-checks` (every debug build, so `cargo test`) and a wrap to
+    // `usize::MAX` in release. The trailing `n <= 0` guard rejected the wrapped
+    // value only by coincidence (`usize::MAX as i32 == -1`), so the expression is
+    // now total rather than relying on that coupling.
+    //
+    // `InvalidArgument` specifically, not merely `is_err()`: it proves the
+    // safe-Rust guard fired before any pointer reached the backend. The Intel arm
+    // passes `n` into the Fortran ABI with no length argument, so a corrupting
+    // call could not be told from a rejected one by `is_err()` alone.
+    use nuvai_mkl::error::ErrorKind;
+    let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+
+    // Empty `ia` describes no rows; `ja`/`a` are empty too, so the
+    // `ja.len() != a.len()` check passes and the subtraction is reached.
+    let err = solver.solve(&[], &[], &[], &[]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+
+    // Same guard with a populated `ja`/`a` and right-hand side.
+    let err = solver
+        .solve(&[], &[1i32], &[1.0f64], &[1.0f64])
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+
+    // `ia = [1]` is well-formed CSR but describes a zero-order system; it stays
+    // rejected, through the length guard rather than the empty-`ia` one.
+    let err = solver.solve(&[1i32], &[], &[], &[]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+
+    // The well-formed path still solves — the new guard rejects nothing valid.
+    let ia = [1i32, 3, 6, 8];
+    let ja = [1i32, 2, 1, 2, 3, 2, 3];
+    let a = [2.0f64, 1.0, 1.0, 3.0, 1.0, 1.0, 2.0];
+    let x = solver.solve(&ia, &ja, &a, &[4.0f64, 10.0, 8.0]).unwrap();
+    assert_close64(&x, &[1.0, 2.0, 3.0], 1e-9);
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn pardiso_reuses_factorization_on_aarch64() {

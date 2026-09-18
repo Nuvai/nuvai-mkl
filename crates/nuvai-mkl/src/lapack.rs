@@ -81,6 +81,11 @@ fn check_solve_dims(
 
 /// Validate a `?getrf` call's buffers (writes `m × n` with leading
 /// dimension `lda`, plus `min(m,n)` pivots).
+///
+/// `lda` must cover the stored width of a row, which is layout-dependent:
+/// `lda ≥ n` for `RowMajor` (rows are strided by `lda`, so a shorter stride
+/// makes consecutive rows overlap) and `lda ≥ m` for `ColMajor`, mirroring
+/// [`blas::check_matrix`](crate::blas).
 fn check_factor_dims(
     layout: Layout,
     m: i32,
@@ -92,8 +97,15 @@ fn check_factor_dims(
     if m <= 0 || n <= 0 {
         return Err(Error::invalid("lapack: m and n must be positive"));
     }
-    if lda < m {
-        return Err(Error::invalid("lapack: lda < m"));
+    let min_ld = match layout {
+        Layout::ColMajor => m,
+        Layout::RowMajor => n,
+    };
+    if lda < min_ld {
+        return Err(Error::invalid(match layout {
+            Layout::ColMajor => "lapack: lda < m",
+            Layout::RowMajor => "lapack: lda < n (row-major)",
+        }));
     }
     if ipiv_len < m.min(n) as usize {
         return Err(Error::invalid("lapack: ipiv too short"));
@@ -195,6 +207,11 @@ pub fn dgesv(
 
 /// LU factorization of a general single-precision `m × n` matrix `a`
 /// (no pivoting applied yet — returns the factorization and pivot vector).
+///
+/// `a` is `m × n` in `layout` order with leading dimension `lda`: `lda ≥ n` for
+/// `RowMajor`, `lda ≥ m` for `ColMajor`. `ipiv` must have length `min(m, n)`. On
+/// success `a` is overwritten by its LU factorization and `ipiv` by the pivot
+/// indices.
 pub fn sgetrf(
     layout: Layout,
     m: i32,
@@ -206,8 +223,10 @@ pub fn sgetrf(
     check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
     #[cfg(not(target_arch = "aarch64"))]
     {
-        // SAFETY: `a` covers `lda·n` elements and `ipiv` covers `min(m,n)`,
-        // per `check_factor_dims` above; `m`, `n`, `lda` are non-negative.
+        // SAFETY: `a` reaches the trailing element `LAPACKE_sgetrf` writes —
+        // `lda·n` elements in column-major order, `(m-1)·lda + n` in row-major —
+        // and `ipiv` covers `min(m,n)`, per `check_factor_dims` above; `m`, `n`
+        // and `lda` are positive.
         let info = unsafe {
             nuvai_mkl_sys::LAPACKE_sgetrf(
                 lapacke_layout(layout),
@@ -230,6 +249,11 @@ pub fn sgetrf(
 }
 
 /// LU factorization of a general double-precision `m × n` matrix `a`.
+///
+/// `a` is `m × n` in `layout` order with leading dimension `lda`: `lda ≥ n` for
+/// `RowMajor`, `lda ≥ m` for `ColMajor`. `ipiv` must have length `min(m, n)`. On
+/// success `a` is overwritten by its LU factorization and `ipiv` by the pivot
+/// indices.
 pub fn dgetrf(
     layout: Layout,
     m: i32,
@@ -241,8 +265,10 @@ pub fn dgetrf(
     check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
     #[cfg(not(target_arch = "aarch64"))]
     {
-        // SAFETY: `a` covers `lda·n` elements and `ipiv` covers `min(m,n)`,
-        // per `check_factor_dims` above.
+        // SAFETY: `a` reaches the trailing element `LAPACKE_dgetrf` writes —
+        // `lda·n` elements in column-major order, `(m-1)·lda + n` in row-major —
+        // and `ipiv` covers `min(m,n)`, per `check_factor_dims` above; `m`, `n`
+        // and `lda` are positive.
         let info = unsafe {
             nuvai_mkl_sys::LAPACKE_dgetrf(
                 lapacke_layout(layout),

@@ -387,11 +387,110 @@ fn dump_directions(n: usize) {
     let _ = (re, im);
 }
 
+
+/// Does the interleaved n=8 kernel write past the end of its buffers?
+///
+/// Exact-size buffers are surrounded by 0xAA canaries: the output buffer holds
+/// exactly `n` DSPComplex (64 bytes at n=8) with 64 bytes of canary on each
+/// side, so any out-of-bounds store is visible. This distinguishes
+/// "numerically wrong but in-bounds" from "corrupts the heap".
+fn canary_oob(n: usize) {
+    out!("--- canary / out-of-bounds probe, n={n} ---");
+    let pad = 64usize;
+    let bytes = n * std::mem::size_of::<DSPComplex>();
+    let mut ibuf = vec![0xAAu8; bytes + pad * 2];
+    let mut obuf = vec![0xAAu8; bytes + pad * 2];
+    let ip = unsafe { ibuf.as_mut_ptr().add(pad) as *mut DSPComplex };
+    let op = unsafe { obuf.as_mut_ptr().add(pad) as *mut DSPComplex };
+    unsafe {
+        for j in 0..n {
+            *ip.add(j) = DSPComplex { real: 0.0, imag: 0.0 };
+        }
+        (*ip).real = 1.0;
+    }
+    unsafe {
+        let setup = vDSP_DFT_Interleaved_CreateSetup(
+            std::ptr::null_mut(),
+            n as _,
+            vDSP_DFT_FORWARD,
+            vDSP_DFT_Interleaved_ComplextoComplex,
+        );
+        out!("  interleaved f32 setup non-null: {}", !setup.is_null());
+        if !setup.is_null() {
+            vDSP_DFT_Interleaved_Execute(setup, ip, op);
+            vDSP_DFT_Interleaved_DestroySetup(setup);
+        }
+    }
+    let vals: Vec<String> = unsafe {
+        (0..n)
+            .map(|k| format!("({}, {})", (*op.add(k)).real, (*op.add(k)).imag))
+            .collect()
+    };
+    out!("  interleaved f32 out: {}", vals.join(" "));
+    out!(
+        "  canary: input pre={} post={} | output pre={} post={}  (true = nothing written past the buffer)",
+        ibuf[..pad].iter().all(|&b| b == 0xAA),
+        ibuf[bytes + pad..].iter().all(|&b| b == 0xAA),
+        obuf[..pad].iter().all(|&b| b == 0xAA),
+        obuf[bytes + pad..].iter().all(|&b| b == 0xAA),
+    );
+
+    // Control: the split family at the same length.
+    let mut or = vec![0.0f32; n];
+    let mut oi = vec![0.0f32; n];
+    unsafe {
+        let setup = vDSP_DFT_zop_CreateSetup(std::ptr::null_mut(), n as _, vDSP_DFT_FORWARD);
+        let ir = vec![1.0f32; 0].into_iter().chain(std::iter::once(1.0f32)).chain(std::iter::repeat_n(0.0f32, n - 1)).collect::<Vec<f32>>();
+        let ii = vec![0.0f32; n];
+        out!("  split f32 setup non-null: {}", !setup.is_null());
+        if !setup.is_null() {
+            vDSP_DFT_Execute(setup, ir.as_ptr(), ii.as_ptr(), or.as_mut_ptr(), oi.as_mut_ptr());
+            vDSP_DFT_DestroySetup(setup);
+        }
+    }
+    let sv: Vec<String> = (0..n).map(|k| format!("({}, {})", or[k], oi[k])).collect();
+    out!("  split f32 out:       {}", sv.join(" "));
+}
+
+/// The crate's own public path, run FIRST in a fresh process, to answer
+/// "does `FftPlan::forward_c32(8)` merely return wrong numbers, or abort?"
+fn crate_path_probe() {
+    out!("--- crate public path, n=8, run first in a fresh process ---");
+    for round in 0..3 {
+        let plan = match FftPlan::new_c32(8) {
+            Ok(p) => p,
+            Err(e) => {
+                out!("  round {round}: new_c32(8) -> Err({e:?})");
+                return;
+            }
+        };
+        let mut input = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 8];
+        input[0].real = 1.0;
+        let mut freq = vec![MKL_Complex8 { real: 0.0, imag: 0.0 }; 8];
+        plan.forward_c32(&input, &mut freq).unwrap();
+        let v: Vec<String> = freq.iter().map(|c| format!("({}, {})", c.real, c.imag)).collect();
+        out!("  round {round}: forward_c32 = {}", v.join(" "));
+    }
+    for round in 0..2 {
+        let plan = FftPlan::new_c64(8).unwrap();
+        let mut input = vec![MKL_Complex16 { real: 0.0, imag: 0.0 }; 8];
+        input[0].real = 1.0;
+        let mut freq = vec![MKL_Complex16 { real: 0.0, imag: 0.0 }; 8];
+        plan.forward_c64(&input, &mut freq).unwrap();
+        let v: Vec<String> = freq.iter().map(|c| format!("({}, {})", c.real, c.imag)).collect();
+        out!("  round {round}: forward_c64 = {}", v.join(" "));
+    }
+}
+
 #[test]
 fn diag53() {
     out!("===== DIAG-53 FFT/vDSP evidence =====");
     out!("os/arch: {} / {}", std::env::consts::OS, std::env::consts::ARCH);
     out!("{}", env_info());
+    crate_path_probe();
+    out!("STAGE: crate_path_probe done");
+    canary_oob(8);
+    out!("STAGE: canary_oob done");
 
     out!("--- setup acceptance + correctness vs analytic DFT (forward, complextocomplex) ---");
     out!(
@@ -452,6 +551,7 @@ fn diag53() {
         );
     }
 
+    out!("STAGE: setup matrix done");
     out!("--- correctness errors (small = correct) ---");
     out!(
         "{:>5} {:>20} {:>20} {:>20} {:>20} {:>20}",
@@ -469,14 +569,22 @@ fn diag53() {
         );
     }
 
+    out!("STAGE: correctness done");
     dump_delta(8);
+    out!("STAGE: delta8 done");
     dump_delta(24);
+    out!("STAGE: delta24 done");
     dump_matrix(8);
+    out!("STAGE: matrix8 done");
     dump_matrix(24);
+    out!("STAGE: matrix24 done");
     dump_alignment(8);
+    out!("STAGE: alignment done");
     dump_directions(8);
+    out!("STAGE: directions8 done");
     dump_directions(24);
 
+    out!("STAGE: directions24 done");
     out!("===== DIAG-53 END =====");
     panic!("DIAG-53: intentional panic to surface the captured stdout above");
 }

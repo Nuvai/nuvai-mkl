@@ -22,6 +22,22 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ### Fixed
 
+- The MKL runtime's implicit dependencies are now forced into the test binaries
+  by an object file, not by linker flags alone (issue #44). `libmkl_core.so.3`
+  calls `log`/`exp`/`sin`/… and `libmkl_intel_thread.so.3` calls `omp_*` without
+  declaring a `DT_NEEDED` for libm or for the OpenMP runtime, so both have to
+  reach the process-global scope through the executable's own `DT_NEEDED` —
+  otherwise MKL's shared objects cannot resolve them and the binary aborts at
+  load time. The `-Wl,--no-as-needed` flags that were meant to keep them are
+  honoured by GNU ld and lld but silently discarded by mold, which records `-l`
+  inputs by *resolved file* and drops a repeat mention — however it is spelled
+  — before ever consulting the as-needed state. On such a linker the test suite
+  died at load time with `undefined symbol: omp_in_parallel` (and, before that,
+  could look like it had "mostly passed", because the tests that ran first never
+  called into MKL). `crates/nuvai-mkl/build/force_runtime.c` now leaves those
+  symbols undefined in a regular object file, which every linker honours; the
+  existing flags are kept for GNU ld and lld.
+
 - `blas` level-1 routines reject negative strides. A negative stride was
   previously accepted but walked *below* the slice (the wrapper passes the
   slice's first element as the CBLAS base), making heap out-of-bounds

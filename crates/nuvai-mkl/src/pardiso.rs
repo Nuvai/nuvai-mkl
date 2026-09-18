@@ -167,7 +167,15 @@ impl Pardiso {
             if ja.len() != a.len() {
                 return Err(Error::invalid("PARDISO: ja/a length mismatch"));
             }
-            let n = (ia.len() - 1) as i32;
+            // `ia` has length n+1, so an empty `ia` would underflow this
+            // subtraction: a panic under `overflow-checks` (every debug build)
+            // and a wrap to `usize::MAX` in release. `checked_sub` makes the
+            // expression total instead of leaving the `n <= 0` guard below to
+            // catch the wrapped `usize::MAX as i32 == -1` by coincidence.
+            let n = match ia.len().checked_sub(1) {
+                Some(n) => n as i32,
+                None => return Err(Error::invalid("PARDISO: bad ia/b lengths")),
+            };
             if n <= 0 || b.len() != n as usize {
                 return Err(Error::invalid("PARDISO: bad ia/b lengths"));
             }
@@ -299,7 +307,15 @@ impl Pardiso {
         if ja.len() != a.len() {
             return Err(Error::invalid("PARDISO: ja/a length mismatch"));
         }
-        let n = (ia.len() - 1) as i32;
+        // `ia` has length n+1, so an empty `ia` would underflow this
+        // subtraction: a panic under `overflow-checks` (every debug build) and a
+        // wrap to `usize::MAX` in release. `checked_sub` makes the expression
+        // total instead of leaving the `n <= 0` guard below to catch the wrapped
+        // `usize::MAX as i32 == -1` by coincidence.
+        let n = match ia.len().checked_sub(1) {
+            Some(n) => n as i32,
+            None => return Err(Error::invalid("PARDISO: bad ia/b lengths")),
+        };
         if n <= 0 || b.len() != n as usize {
             return Err(Error::invalid("PARDISO: bad ia/b lengths"));
         }

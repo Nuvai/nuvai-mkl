@@ -109,6 +109,88 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ### Fixed
 
+- Enabling both backend features on Apple Silicon is a compile error instead of
+  a silent choice (issue #35). `--features accelerate,openblas` resolved to
+  OpenBLAS — the `openblas` arm was tested first in both selectors — with no
+  diagnostic of any kind, which is the silent selection ADR-0003 forbids and the
+  same violation the no-feature case was already rejected for. A `compile_error!`
+  now rejects it, and `backend_for_target` returns the equivalent `Err` for
+  build scripts, which are host-compiled and cannot see the target. Both
+  selectors delegate to one `macos_aarch64_backend`, an exhaustive match over
+  the four feature pairs, so the both-features case is now tested for real:
+  asserted through `backend_for_target` it could only ever have observed
+  whichever pair the test build happened to be compiled with, and the assertion
+  would have passed without testing anything.
+
+- `accelerate` and `openblas` were not actually mutually exclusive before
+  (issue #35), which is the other half of why the case above went unnoticed.
+  `--no-default-features --features openblas` did not produce an OpenBLAS-only
+  build: the manifests declared `nuvai-mkl-src`/`nuvai-mkl-sys` without
+  `default-features = false`, so every edge back into them re-enabled
+  `accelerate`, and features being additive across the graph the build ended up
+  with both — leaving the silent preference above to pick the one the command
+  line asked for. The OpenBLAS CI job has thus been building a both-features
+  workspace and passing only by accident of that bug; its own configuration was
+  the defect it exists to catch. The workspace dependency entries now set
+  `default-features = false`; each package's `default = ["accelerate"]` names
+  the feature explicitly rather than inheriting it, so an ordinary build is
+  unchanged. Verified with `cargo tree -e features` in both configurations, and
+  by running the job's own command locally — with `OPENBLAS_ROOT` set, since
+  Homebrew's OpenBLAS is keg-only — which now resolves to `openblas` alone and
+  links and tests clean.
+
+- `nuvai-mkl-sys`'s build script states why it cannot generate bindings, rather
+  than failing later on a missing file (issue #34). bindgen is a *host*-resolved
+  build-dependency, so Cargo installs it only when the host is an Intel x86_64
+  non-macOS platform. Cross-compiling to an Intel *target* from any other host
+  (Apple Silicon macOS, aarch64 Linux) still matched the Intel arm of the
+  target dispatch, but that arm's body was gated on the host cfg, so it compiled
+  nothing and returned successfully having written no `bindings.rs`. The first
+  symptom was then the `include!(concat!(env!("OUT_DIR"), "/bindings.rs"))` in
+  `src/lib.rs` — `couldn't find file .../bindings.rs`, naming neither the
+  host/target split nor the build-dependency gate that caused it. The arm now
+  panics with the host, the target and the gate, and points at the
+  `x86_64-linux`/`x86_64-windows` CI jobs, which build these targets natively.
+  Both behaviours reproduced from an `aarch64-apple-darwin` host with `cargo
+  check --target x86_64-unknown-linux-gnu -p nuvai-mkl-sys`. This is a diagnosis
+  fix, not a capability one: generating the bindings was never the whole
+  problem — linking them still needs an x86_64 Linux linker and that target's
+  MKL shared objects — so an Intel cross-check still needs an Intel host or CI.
+
+- PARDISO releases its internal memory after a failed analysis phase (issue
+  #23). `Pardiso` gated the phase `-1` release in `Drop` on an `analyzed` flag
+  that was set only once phase 11 returned success, so a phase-11 failure (error
+  `-2`, out of memory, among others) returned with the flag still false and the
+  release skipped — leaking whatever the partial analysis had allocated. The
+  flag now records what actually makes a phase `-1` legal, `pardisoinit` having
+  run, and is set in `Pardiso::new` before any `pardiso` call can fail, so no
+  error path can leave it false. It is true for every Intel handle today and
+  stays a field rather than being folded away because the invariant it names is
+  what `Drop` is keyed on. An Intel-only unit test pins it at construction —
+  precisely the point the old code got wrong — rather than driving a failure
+  through `solve`, which would need an input oneMKL rejects at analysis and
+  would then be asserting on which phase reported the error instead of on the
+  invariant.
+
+- Accelerate's sparse backends reject a structurally empty CSR row instead of
+  aborting the process on macOS 14 (issue #58). `_SparseFactorQR_Double` does
+  not return an error for such an input there — it aborts with `SIGTRAP`, which
+  cannot be caught, so the safe API accepted input that could kill the process
+  on a supported platform. macOS 26 returns a documented state-1 error object
+  instead, which is why the case passed locally and aborted in CI. The row is
+  now rejected in `csr_to_csc`, the single validated CSR→CSC transposition, as
+  `ErrorKind::InvalidArgument`. That is not an arbitrary symptom check: an empty
+  row is a zero row, so the matrix is singular and no backend has a solution to
+  return — the same answer the residual check already gives for a singular
+  matrix. Intel PARDISO does not share this function and still reports the row
+  as its own zero-pivot error at phase 22, which it handles; this closes a
+  process abort, not a behaviour worth propagating to a path that already copes.
+  The guard covers the DSS Cholesky path as well, since it shares the
+  transposition and an empty row of the stored upper triangle likewise leaves
+  that row of the full symmetric matrix zero. The test this replaces existed
+  only as a comment explaining why it could not be written; it can now, and
+  passes on both macOS versions.
+
 - The MKL runtime's implicit dependencies are now forced into the test binaries
   by an object file, not by linker flags alone (issue #44). `libmkl_core.so.3`
   calls `log`/`exp`/`sin`/… and `libmkl_intel_thread.so.3` calls `omp_*` without
@@ -192,6 +274,21 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   debug-asserted. Flagged as a follow-up at the bottom of PR #59.
 
 ### Documentation
+
+- `acquire.rs`'s `locate` records why its aarch64 panic is unreachable rather
+  than caller-facing (issue #39). The issue asked for it to return `Result`
+  because a third-party build script calling it would get a hard panic, but that
+  caller no longer exists: `locate` left the library target in #24, and since
+  #60 the acquisition is `include!`d by `nuvai-mkl-src`'s `build.rs` alone, so
+  `locate` is private to that build script's binary and cannot be imported.
+  Within it the panicking arm is unreachable too — `main` dispatches on
+  `backend_for_target` first, `emit_intel_mkl` is the sole caller, and no
+  aarch64 target selects `IntelMkl`. The doc comment that described a downstream
+  caller is corrected and the guard is kept as the check on that invariant.
+  Nothing in the library target panics on aarch64 either:
+  `MklInfo::from_build_metadata` answers `Option` and `backend_for_target`
+  answers `Result`. No code change beyond the comment: the issue is closed as
+  overtaken by #24/#60.
 
 - The `pardiso` phase-33 `SAFETY` comment now states the invariant behind
   casting the caller's `&[f64]` right-hand side from `*const` to `*mut` (issue

@@ -369,8 +369,9 @@ impl Pardiso {
                 // "fix" this by skipping the release when `status != OK` (#30).
                 // Apple's docs for `SparseOpaqueFactorization_Double`
                 // (Sparse/Solve.h) list four states, three of which have
-                // `status < 0` yet still own memory:
-                //   state 1: `.symbolicFactorization.status < 0` — nothing valid;
+                // `status < 0`:
+                //   state 1: `.symbolicFactorization.status < 0` — nothing valid,
+                //            so nothing is owned;
                 //   state 2: `symbolic >= 0 && status < 0 && numeric == NULL` —
                 //            symbolic is valid and "may be used for future calls";
                 //   state 3: `symbolic >= 0 && status < 0 && numeric != NULL` —
@@ -380,18 +381,19 @@ impl Pardiso {
                 // The type docs say to free "these objects" with `SparseCleanup`,
                 // and `SparseCleanup` (Sparse/SolveImplementationTyped.h) is a
                 // static inline that calls `_SparseDestroyOpaqueNumeric`
-                // unconditionally — with no status check. Skipping the release
-                // would leak the failed factorization.
+                // unconditionally — with no status check. States 2 and 3 own
+                // memory, so skipping the release would leak it; releasing state
+                // 1 frees nothing, but it is what `SparseCleanup` does anyway.
                 //
-                // Both states are reachable here, not just one, and
-                // `pardiso_releases_failed_factorization_on_aarch64` pins each
-                // with its own matrix. Measured on macOS 26: an all-zero 2x2
-                // returns state 3 (`status == -2`,
-                // `symbolicFactorization.status == 0`, non-NULL numeric), while
-                // a structurally empty row returns state 1 (`status == -2`,
-                // `symbolicFactorization.status == -3`, NULL numeric) — the
-                // latter leaks nothing, but releasing it is still correct and is
-                // what `SparseCleanup` would do.
+                // State 3 is the one a test pins: the all-zero 2x2 in
+                // `pardiso_releases_failed_factorization_zero_matrix_on_aarch64`
+                // (`status == -2`, `symbolicFactorization.status == 0`, non-NULL
+                // numeric). A structurally empty row reaches state 1 instead
+                // (`status == -2`, `symbolicFactorization.status == -3`, NULL
+                // numeric), and is deliberately left untested: on the macOS 14 CI
+                // runner `_SparseFactorQR_Double` aborts the process on that
+                // input rather than returning, so no assertion on it can pass in
+                // CI — see the note in `tests/smoke.rs`.
                 //
                 // SAFETY: `factor` is an owned, initialized factorization in one
                 // of those states (the struct is returned by value and fully

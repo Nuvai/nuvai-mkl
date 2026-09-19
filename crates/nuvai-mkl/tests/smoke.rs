@@ -1086,33 +1086,21 @@ fn pardiso_releases_failed_factorization_zero_matrix_on_aarch64() {
     assert_eq!(err.kind(), ErrorKind::Mkl, "{err}");
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-#[test]
-fn pardiso_releases_failed_factorization_empty_row_on_aarch64() {
-    use nuvai_mkl::error::ErrorKind;
-
-    // The second route into the non-OK destroy path of `Pardiso::solve` (#30) —
-    // see the sibling test above for the branch itself.
-    //
-    // A structurally empty second row reaches it as state 1 (`status == -2`,
-    // `symbolicFactorization.status == -3`, NULL numeric): nothing valid, so
-    // nothing leaks here, but releasing is still correct and is what
-    // `SparseCleanup` would do unconditionally.
-    //
-    // Deliberately a separate `#[test]` rather than a second case in a loop:
-    // an abort inside Accelerate kills the whole test binary and libtest then
-    // reports only the tests that already finished, so a loop would hide which
-    // input was responsible. One test per input lets CI name it.
-    let ia = [1i32, 2, 2];
-    let ja = [1i32];
-    let a = [1.0f64];
-    let b = [1.0f64, 1.0];
-    let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
-    let err = solver
-        .solve(&ia, &ja, &a, &b)
-        .expect_err("QR with a structurally empty row must fail");
-    assert_eq!(err.kind(), ErrorKind::Mkl, "{err}");
-}
+// A structurally empty row (`ia = [1,2,2]`, `ja = [1]`) reaches the same
+// branch as a *different* state — state 1, `status == -2`,
+// `symbolicFactorization.status == -3`, NULL numeric — and there is
+// deliberately no test for it. Measured on the `macos-14` CI runner,
+// `_SparseFactorQR_Double` does not return that state there: it aborts the
+// process with SIGTRAP, so a test asserting on it can never pass in CI. A
+// probe that called the factorization and leaked the result without ever
+// calling `_SparseDestroyOpaqueNumeric` aborted identically, which places the
+// abort inside the factorization call and not in this wrapper's release.
+// macOS 26 returns the state-1 object normally.
+//
+// Nothing is lost by leaving it uncovered: state 1 keeps nothing valid, so
+// there is no memory to leak — the leak #30 was about is state 3, which the
+// test above does pin. Gating a state-1 test on the macOS version instead
+// would only look like coverage, since every CI runner is macOS 14.
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]

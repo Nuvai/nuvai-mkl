@@ -27,6 +27,11 @@ use std::os::raw::c_void;
 #[cfg(not(target_arch = "aarch64"))]
 use std::ptr;
 
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    not(target_arch = "aarch64")
+))]
+use crate::conv::len_to_c_int;
 use crate::error::{Error, Result};
 
 /// Opaque factorized handle. On Intel this is the MKL DSS handle pointer; on
@@ -69,7 +74,11 @@ impl Dss {
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            let n_rows = (row_index.len() as i32) - 1;
+            // `row_index` has length n+1, so `len_to_c_int` first rejects a
+            // length the `i32` row count cannot hold; the subtraction is then
+            // `0 - 1 = -1` for an empty `row_index`, caught by the `n_rows <= 0`
+            // guard below.
+            let n_rows = len_to_c_int(row_index.len(), "DSS")? - 1;
             if n_rows <= 0 || values.len() != columns.len() {
                 return Err(Error::invalid("DSS: bad row_index/columns/values lengths"));
             }
@@ -129,7 +138,7 @@ impl Dss {
                 // returned by value; this releases it exactly once on the error
                 // path.
                 unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
-                return Err(Error::mkl(status, "_SparseFactorSymmetric_Double"));
+                return Err(Error::sparse(status, "_SparseFactorSymmetric_Double"));
             }
             Ok(Self {
                 handle: factor,
@@ -138,9 +147,14 @@ impl Dss {
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            let n_rows = (row_index.len() as i32) - 1;
+            // `row_index` has length n+1, so `len_to_c_int` first rejects a
+            // length the `MKL_INT` dimension cannot hold; the subtraction is
+            // then `0 - 1 = -1` for an empty `row_index`, caught by the
+            // `n_rows <= 0` guard below. `n_nonzeros` is bounded by
+            // `columns.len()`, so both counts the DSS ABI takes are checked.
+            let n_rows = len_to_c_int(row_index.len(), "DSS")? - 1;
             let n_cols = n_rows;
-            let n_nonzeros = columns.len() as i32;
+            let n_nonzeros = len_to_c_int(columns.len(), "DSS")?;
             if n_rows <= 0 || values.len() != columns.len() {
                 return Err(Error::invalid("DSS: bad row_index/columns/values lengths"));
             }
@@ -160,7 +174,7 @@ impl Dss {
             unsafe {
                 let mut status = nuvai_mkl_sys::dss_create_(&mut handle, &opt_create);
                 if status != 0 {
-                    return Err(Error::mkl(status, "dss_create"));
+                    return Err(Error::dss(status, "dss_create"));
                 }
 
                 status = nuvai_mkl_sys::dss_define_structure_(
@@ -174,14 +188,14 @@ impl Dss {
                 );
                 if status != 0 {
                     nuvai_mkl_sys::dss_delete_(&handle, &opt_create);
-                    return Err(Error::mkl(status, "dss_define_structure"));
+                    return Err(Error::dss(status, "dss_define_structure"));
                 }
 
                 let mut perm = vec![0i32; n_rows as usize];
                 status = nuvai_mkl_sys::dss_reorder_(&mut handle, &opt_reorder, perm.as_mut_ptr());
                 if status != 0 {
                     nuvai_mkl_sys::dss_delete_(&handle, &opt_create);
-                    return Err(Error::mkl(status, "dss_reorder"));
+                    return Err(Error::dss(status, "dss_reorder"));
                 }
 
                 status = nuvai_mkl_sys::dss_factor_real_(
@@ -191,7 +205,7 @@ impl Dss {
                 );
                 if status != 0 {
                     nuvai_mkl_sys::dss_delete_(&handle, &opt_create);
-                    return Err(Error::mkl(status, "dss_factor_real"));
+                    return Err(Error::dss(status, "dss_factor_real"));
                 }
             }
 
@@ -243,7 +257,7 @@ impl Dss {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status, "dss_solve_real"));
+                return Err(Error::dss(status, "dss_solve_real"));
             }
             Ok(sol)
         }

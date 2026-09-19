@@ -172,7 +172,7 @@ impl FftPlan {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status as i32, "DftiCreateDescriptor"));
+                return Err(Error::dfti(status as i32, "DftiCreateDescriptor"));
             }
             // Explicitly request out-of-place transforms so the caller's distinct
             // input/output buffers are honoured.
@@ -189,7 +189,7 @@ impl FftPlan {
                 // SAFETY: `handle` is a valid descriptor, freed exactly once on
                 // this error path and not used afterwards.
                 unsafe { nuvai_mkl_sys::DftiFreeDescriptor(&mut handle) };
-                return Err(Error::mkl(status as i32, "DftiSetValue(DFTI_PLACEMENT)"));
+                return Err(Error::dfti(status as i32, "DftiSetValue(DFTI_PLACEMENT)"));
             }
             // Pin the scaling so `backward(forward(x)) == x` regardless of the MKL
             // version's default backward scale (which is not always `1/n`).
@@ -201,7 +201,7 @@ impl FftPlan {
             if status != 0 {
                 // SAFETY: `handle` is a valid descriptor, freed exactly once here.
                 unsafe { nuvai_mkl_sys::DftiFreeDescriptor(&mut handle) };
-                return Err(Error::mkl(
+                return Err(Error::dfti(
                     status as i32,
                     "DftiSetValue(DFTI_FORWARD_SCALE)",
                 ));
@@ -219,7 +219,7 @@ impl FftPlan {
             if status != 0 {
                 // SAFETY: `handle` is a valid descriptor, freed exactly once here.
                 unsafe { nuvai_mkl_sys::DftiFreeDescriptor(&mut handle) };
-                return Err(Error::mkl(
+                return Err(Error::dfti(
                     status as i32,
                     "DftiSetValue(DFTI_BACKWARD_SCALE)",
                 ));
@@ -229,7 +229,7 @@ impl FftPlan {
             if status != 0 {
                 // SAFETY: `handle` is a valid descriptor, freed exactly once here.
                 unsafe { nuvai_mkl_sys::DftiFreeDescriptor(&mut handle) };
-                return Err(Error::mkl(status as i32, "DftiCommitDescriptor"));
+                return Err(Error::dfti(status as i32, "DftiCommitDescriptor"));
             }
             Ok(Self {
                 handle,
@@ -270,7 +270,7 @@ impl FftPlan {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status as i32, "DftiComputeForward"));
+                return Err(Error::dfti(status as i32, "DftiComputeForward"));
             }
             Ok(())
         }
@@ -300,7 +300,7 @@ impl FftPlan {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status as i32, "DftiComputeBackward"));
+                return Err(Error::dfti(status as i32, "DftiComputeBackward"));
             }
             Ok(())
         }
@@ -330,7 +330,7 @@ impl FftPlan {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status as i32, "DftiComputeForward"));
+                return Err(Error::dfti(status as i32, "DftiComputeForward"));
             }
             Ok(())
         }
@@ -364,7 +364,7 @@ impl FftPlan {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status as i32, "DftiComputeBackward"));
+                return Err(Error::dfti(status as i32, "DftiComputeBackward"));
             }
             Ok(())
         }

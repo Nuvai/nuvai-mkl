@@ -25,6 +25,8 @@ use rand_chacha::ChaCha20Rng;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use rand_distr::{Distribution, Normal, Uniform};
 
+#[cfg(not(target_arch = "aarch64"))]
+use crate::conv::len_to_c_int;
 use crate::error::{Error, Result};
 
 /// Opaque stream state. On Intel this is the VSL stream pointer; on aarch64 it
@@ -87,7 +89,7 @@ impl Stream {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status, "vslNewStream"));
+                return Err(Error::vsl(status, "vslNewStream"));
             }
             Ok(Self {
                 state,
@@ -136,7 +138,7 @@ impl Stream {
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            let n = out.len() as c_int;
+            let n = len_to_c_int(out.len(), "vsRngUniform")?;
             // SAFETY: `self.state` is a valid stream from `new`; `out` is a
             // mutable slice of `n` elements; the method constant and `a`/`b`
             // (validated `a < b` above) are valid arguments.
@@ -151,7 +153,7 @@ impl Stream {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status, "vsRngUniform"));
+                return Err(Error::vsl(status, "vsRngUniform"));
             }
             Ok(())
         }
@@ -194,7 +196,7 @@ impl Stream {
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            let n = out.len() as c_int;
+            let n = len_to_c_int(out.len(), "vdRngUniform")?;
             // SAFETY: `self.state` is a valid stream; `out` is a mutable slice
             // of `n` elements; the method constant and `a`/`b` (validated
             // `a < b` above) are valid arguments.
@@ -209,7 +211,7 @@ impl Stream {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status, "vdRngUniform"));
+                return Err(Error::vsl(status, "vdRngUniform"));
             }
             Ok(())
         }
@@ -235,7 +237,7 @@ impl Stream {
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            let n = out.len() as c_int;
+            let n = len_to_c_int(out.len(), "vsRngGaussian")?;
             // SAFETY: `self.state` is a valid stream; `out` is a mutable slice
             // of `n` elements; the method constant and `mean`/`sigma` are valid
             // arguments.
@@ -250,7 +252,7 @@ impl Stream {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status, "vsRngGaussian"));
+                return Err(Error::vsl(status, "vsRngGaussian"));
             }
             Ok(())
         }
@@ -276,7 +278,7 @@ impl Stream {
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            let n = out.len() as c_int;
+            let n = len_to_c_int(out.len(), "vdRngGaussian")?;
             // SAFETY: `self.state` is a valid stream; `out` is a mutable slice
             // of `n` elements; the method constant and `mean`/`sigma` are valid
             // arguments.
@@ -291,7 +293,7 @@ impl Stream {
                 )
             };
             if status != 0 {
-                return Err(Error::mkl(status, "vdRngGaussian"));
+                return Err(Error::vsl(status, "vdRngGaussian"));
             }
             Ok(())
         }

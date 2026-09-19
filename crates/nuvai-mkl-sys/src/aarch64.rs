@@ -16,14 +16,24 @@
 // Type layouts below were verified against the macOS SDK headers by a C probe
 // (`sizeof`/`offsetof`), not assumed from documentation.
 
+// The declarations below deliberately keep the C SDK's own identifiers —
+// `CblasRowMajor`, `vDSP_DFT_Setup`, `SparseMatrixStructure.rowCount` — so that
+// this surface can be read against the Accelerate headers it mirrors, and the
+// three C-naming lints are suppressed for the module rather than renaming it
+// away from the ABI it describes.
+//
+// These three are the *only* suppressions the module needs (#36). They were
+// measured, not assumed: with the crate-root `allow`s lifted, `cargo check`
+// reports nothing here except these naming lints, and `cargo clippy` adds
+// exactly one finding — which is fixed rather than suppressed (see the
+// `AmbiguousIfCopy` guard below, whose `?Sized` bound was redundant). In
+// particular `dead_code` is unnecessary: every declaration is reachable through
+// the `pub use aarch64::*` in `lib.rs`, so none of them is dead, and
+// `improper_ctypes`/`clippy::all` — the two that were covering hand-written,
+// hand-reviewed code — are gone.
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
-#![allow(dead_code)]
-#![allow(improper_ctypes)]
-#![allow(clippy::all)]
-#![allow(clippy::too_many_arguments)]
-#![allow(unused_imports)]
 
 use std::os::raw::{c_long, c_ulong, c_void};
 
@@ -311,7 +321,14 @@ const _: fn() = || {
         fn some_item() {}
     }
     impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
-    impl<T: ?Sized + Copy> AmbiguousIfCopy<u8> for T {}
+    // No `?Sized` on this one: `Copy` requires `Sized` (through `Clone`), so the
+    // relaxation is ignored — which is what `cargo clippy` reported here
+    // ("`?Sized` bound is ignored because of a `Sized` requirement") once
+    // `#![allow(clippy::all)]` stopped covering this module (#36). Dropping it
+    // does not narrow the impl: a type that is `Copy` was never unsized to
+    // begin with, so the guard still applies to exactly the types that would
+    // make the projection ambiguous.
+    impl<T: Copy> AmbiguousIfCopy<u8> for T {}
     let _ = <SparseOpaqueFactorization_Double as AmbiguousIfCopy<_>>::some_item;
 };
 

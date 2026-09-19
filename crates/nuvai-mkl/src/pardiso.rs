@@ -27,6 +27,13 @@ use std::os::raw::c_void;
 ))]
 use std::ptr;
 
+// Used by the Intel arm and the Accelerate arm, but not by the inert
+// linux-aarch64 one, so it carries the same gate as `c_void`/`ptr` above.
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    not(target_arch = "aarch64")
+))]
+use crate::conv::len_to_c_int;
 use crate::error::{Error, Result};
 
 /// PARDISO matrix types (`mtype`).
@@ -171,10 +178,12 @@ impl Pardiso {
             // `ia` has length n+1, so an empty `ia` would underflow this
             // subtraction: a panic under `overflow-checks` (every debug build)
             // and a wrap to `usize::MAX` in release. `checked_sub` makes the
-            // expression total instead of leaving the `n <= 0` guard below to
-            // catch the wrapped `usize::MAX as i32 == -1` by coincidence.
+            // expression total, and `len_to_c_int` rejects any length the
+            // 32-bit `MKL_INT` cannot hold — so `n` no longer relies on the
+            // `n <= 0` guard below catching a truncated `usize::MAX as i32 == -1`
+            // by coincidence.
             let n = match ia.len().checked_sub(1) {
-                Some(n) => n as i32,
+                Some(n) => len_to_c_int(n, "PARDISO")?,
                 None => return Err(Error::invalid("PARDISO: bad ia/b lengths")),
             };
             if n <= 0 || b.len() != n as usize {
@@ -195,6 +204,24 @@ impl Pardiso {
             // buffers (`b` read, `x` written) and `error` is a valid out-arg.
             // `pt`/`iparm`/`error` are passed mutably and the scalars by
             // reference, as the Fortran `pardiso` ABI expects.
+            //
+            // Phase 33's `b` argument is the one cast that needs an invariant
+            // written down (#29). `b` is the caller's `&[f64]` and is cast
+            // `*const` → `*mut` purely to satisfy the ABI: oneMKL's prototype
+            // declares the right-hand side as plain `void *b` (mkl_pardiso.h),
+            // with no `const` variant, even though phase 33 only reads it —
+            // `a` is declared `const void *a` and is passed as `*const c_void`
+            // for exactly that read-only reason. So the cast is sound *only*
+            // while "phase 33 reads `b`" holds: the solution is written to `x`,
+            // never to `b`.
+            //
+            // What would break it: any `iparm` setting that makes PARDISO write
+            // back into `b` (an overwrite/iterative-refinement output option),
+            // or reusing this call shape for a phase with different aliasing. If
+            // that ever becomes necessary, `b` must become `&mut [f64]` or be
+            // replaced by a scratch copy first — writing through this pointer
+            // while the caller still holds the `&[f64]` it came from is UB that
+            // no later check can detect.
             unsafe {
                 // Phase 11: analysis + reordering.
                 let phase = 11i32;
@@ -217,7 +244,7 @@ impl Pardiso {
                     &mut error,
                 );
                 if error != 0 {
-                    return Err(Error::mkl(error, "pardiso phase 11 (analysis)"));
+                    return Err(Error::pardiso(error, "pardiso phase 11 (analysis)"));
                 }
                 self.analyzed = true;
 
@@ -242,7 +269,7 @@ impl Pardiso {
                     &mut error,
                 );
                 if error != 0 {
-                    return Err(Error::mkl(error, "pardiso phase 22 (factorization)"));
+                    return Err(Error::pardiso(error, "pardiso phase 22 (factorization)"));
                 }
 
                 // Phase 33: solve (forward/back substitution + refinement).
@@ -266,7 +293,7 @@ impl Pardiso {
                     &mut error,
                 );
                 if error != 0 {
-                    return Err(Error::mkl(error, "pardiso phase 33 (solve)"));
+                    return Err(Error::pardiso(error, "pardiso phase 33 (solve)"));
                 }
             }
 
@@ -311,10 +338,12 @@ impl Pardiso {
         // `ia` has length n+1, so an empty `ia` would underflow this
         // subtraction: a panic under `overflow-checks` (every debug build) and a
         // wrap to `usize::MAX` in release. `checked_sub` makes the expression
-        // total instead of leaving the `n <= 0` guard below to catch the wrapped
-        // `usize::MAX as i32 == -1` by coincidence.
+        // total, and `len_to_c_int` rejects any length the `i32` row count of
+        // `SparseMatrixStructure` cannot hold — so `n` no longer relies on the
+        // `n <= 0` guard below catching a truncated `usize::MAX as i32 == -1` by
+        // coincidence.
         let n = match ia.len().checked_sub(1) {
-            Some(n) => n as i32,
+            Some(n) => len_to_c_int(n, "PARDISO")?,
             None => return Err(Error::invalid("PARDISO: bad ia/b lengths")),
         };
         if n <= 0 || b.len() != n as usize {
@@ -400,7 +429,7 @@ impl Pardiso {
                 // populated); released exactly once on this error path, since it
                 // was never cached.
                 unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
-                return Err(Error::mkl(status, "_SparseFactorQR_Double"));
+                return Err(Error::sparse(status, "_SparseFactorQR_Double"));
             }
 
             // Replace any previous cache entry: destroy the old factor exactly

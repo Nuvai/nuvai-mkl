@@ -24,14 +24,16 @@
 // Type layouts: `c_int` = i32, CBLAS enums = `u32` (non-Windows), matching the
 // non-Windows path used by `nuvai-mkl::blas` and `nuvai-mkl::lapack`.
 
+// One suppression: the shared `netlib_abi.rs` declarations keep the CBLAS
+// spelling of their constants (`CblasRowMajor`, not `CBLAS_ROW_MAJOR`). That
+// fragment's only other named items are `MKL_Complex8`/`MKL_Complex16` and the
+// `cblas_*`/`?gesv_`/`?getrf_` functions, which are Rust-cased already —
+// `non_camel_case_types` does not fire on those type names (measured directly:
+// compiling this fragment's declarations standalone warns on the five CBLAS
+// constants and nothing else), and `non_snake_case` has no camel-cased field to
+// fire on here, unlike on the Apple Silicon surface. Everything else the crate
+// root used to suppress is gone (#36).
 #![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(dead_code)]
-#![allow(improper_ctypes)]
-#![allow(clippy::all)]
-#![allow(clippy::too_many_arguments)]
-#![allow(unused_imports)]
 
 // The netlib CBLAS + Fortran-LAPACK declarations are shared verbatim with the
 // Apple Silicon surface (`aarch64.rs`) — both Accelerate and OpenBLAS

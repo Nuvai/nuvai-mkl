@@ -1058,53 +1058,60 @@ fn pardiso_detects_singular_on_aarch64() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
-fn pardiso_releases_failed_factorization_on_aarch64() {
+fn pardiso_releases_failed_factorization_zero_matrix_on_aarch64() {
     use nuvai_mkl::error::ErrorKind;
 
     // Regression test for the non-OK destroy path in `Pardiso::solve` (#30,
     // which proposed *skipping* the release — doing so would leak).
     //
-    // Two matrices reach the branch by different routes, and both states Apple
-    // documents are represented — see the comment at the release in
-    // `Pardiso::solve`:
-    //
-    // - all-zero 2x2 -> state 3: `_SparseFactorQR_Double` itself fails
-    //   (`status == -2`, `symbolicFactorization.status == 0`, non-NULL
-    //   `numericFactorization`), so there is an allocated numeric factor the
-    //   wrapper must release. This is *not* caught earlier by `check_residual`,
-    //   which is what handles the singular-but-non-zero matrix in
-    //   `pardiso_detects_singular_on_aarch64`.
-    // - structurally empty second row -> state 1 (`status == -2`,
-    //   `symbolicFactorization.status == -3`, NULL numeric): nothing valid, so
-    //   nothing leaks, but releasing is still correct and is what
-    //   `SparseCleanup` would do unconditionally.
+    // The all-zero 2x2 reaches the branch as state 3 — see the comment at the
+    // release in `Pardiso::solve`: `_SparseFactorQR_Double` itself fails
+    // (`status == -2`, `symbolicFactorization.status == 0`, non-NULL
+    // `numericFactorization`), so there is an allocated numeric factor the
+    // wrapper must release. This is *not* caught earlier by `check_residual`,
+    // which is what handles the singular-but-non-zero matrix in
+    // `pardiso_detects_singular_on_aarch64`.
     //
     // The kind assertion is load-bearing for the same reason as in
     // `dss_releases_failed_factorization_on_aarch64`: `InvalidArgument` (the
     // residual check) or `Unsupported` would mean this branch never ran.
-    let cases: [(&str, &[i32], &[i32], &[f64]); 2] = [
-        (
-            "all-zero 2x2 (state 3)",
-            &[1, 3, 5],
-            &[1, 2, 1, 2],
-            &[0.0, 0.0, 0.0, 0.0],
-        ),
-        (
-            "structurally empty second row (state 1)",
-            &[1, 2, 2],
-            &[1],
-            &[1.0],
-        ),
-    ];
-    for (label, ia, ja, a) in cases {
-        let b = [1.0f64, 1.0];
-        let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
-        let err = solver
-            .solve(ia, ja, a, &b)
-            .err()
-            .unwrap_or_else(|| panic!("{label}: QR must fail"));
-        assert_eq!(err.kind(), ErrorKind::Mkl, "{label}: {err}");
-    }
+    let ia = [1i32, 3, 5];
+    let ja = [1i32, 2, 1, 2];
+    let a = [0.0f64, 0.0, 0.0, 0.0];
+    let b = [1.0f64, 1.0];
+    let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+    let err = solver
+        .solve(&ia, &ja, &a, &b)
+        .expect_err("QR of the all-zero matrix must fail");
+    assert_eq!(err.kind(), ErrorKind::Mkl, "{err}");
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn pardiso_releases_failed_factorization_empty_row_on_aarch64() {
+    use nuvai_mkl::error::ErrorKind;
+
+    // The second route into the non-OK destroy path of `Pardiso::solve` (#30) —
+    // see the sibling test above for the branch itself.
+    //
+    // A structurally empty second row reaches it as state 1 (`status == -2`,
+    // `symbolicFactorization.status == -3`, NULL numeric): nothing valid, so
+    // nothing leaks here, but releasing is still correct and is what
+    // `SparseCleanup` would do unconditionally.
+    //
+    // Deliberately a separate `#[test]` rather than a second case in a loop:
+    // an abort inside Accelerate kills the whole test binary and libtest then
+    // reports only the tests that already finished, so a loop would hide which
+    // input was responsible. One test per input lets CI name it.
+    let ia = [1i32, 2, 2];
+    let ja = [1i32];
+    let a = [1.0f64];
+    let b = [1.0f64, 1.0];
+    let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+    let err = solver
+        .solve(&ia, &ja, &a, &b)
+        .expect_err("QR with a structurally empty row must fail");
+    assert_eq!(err.kind(), ErrorKind::Mkl, "{err}");
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

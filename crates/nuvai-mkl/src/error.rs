@@ -14,6 +14,15 @@ pub enum ErrorKind {
     InvalidArgument,
     /// The requested operation is unavailable on this backend / platform.
     Unsupported,
+    /// The operation is supported here, but a backend resource could not be
+    /// allocated to carry it out (for example a vDSP DFT setup handle).
+    ///
+    /// Distinct from [`ErrorKind::Unsupported`] on purpose: `Unsupported` tells
+    /// the caller "this backend cannot do this, try another or give up", while
+    /// this one means "this backend can do this, but not right now". Retrying,
+    /// shrinking the problem, or freeing memory are all sensible responses to
+    /// this kind and pointless for `Unsupported`.
+    ResourceExhausted,
 }
 
 /// Error type for all `nuvai-mkl` operations.
@@ -58,6 +67,20 @@ impl Error {
         }
     }
 
+    /// A backend resource could not be allocated, though the operation itself
+    /// is supported. See [`ErrorKind::ResourceExhausted`].
+    // Every caller sits behind `target_arch = "aarch64"` for the same reason as
+    // `unsupported` above (the vDSP setup path in `fft`), so it is dead on
+    // Intel, where every domain has a real MKL backend.
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+    pub(crate) fn resource_exhausted(message: impl Into<String>) -> Self {
+        Self {
+            kind: ErrorKind::ResourceExhausted,
+            code: 0,
+            message: message.into(),
+        }
+    }
+
     /// An operation unavailable on `aarch64-unknown-linux-gnu`, where OpenBLAS
     /// covers only BLAS/LAPACK (no FFT/VML/VSL/sparse backend exists).
     #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "gnu"))]
@@ -85,6 +108,9 @@ impl fmt::Display for Error {
             ErrorKind::Mkl => write!(f, "MKL error (code {}): {}", self.code, self.message),
             ErrorKind::InvalidArgument => write!(f, "invalid argument: {}", self.message),
             ErrorKind::Unsupported => write!(f, "unsupported: {}", self.message),
+            ErrorKind::ResourceExhausted => {
+                write!(f, "resource exhausted: {}", self.message)
+            }
         }
     }
 }

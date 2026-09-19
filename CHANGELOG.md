@@ -20,6 +20,14 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   broadcast behavior of reference BLAS, matching the crate's LAPACK validation
   which already rejects non-positive dimensions.
 
+- **Breaking:** `ErrorKind` gains a `ResourceExhausted` variant (issue #31).
+  `ErrorKind` is a public enum without `#[non_exhaustive]`, so any downstream
+  `match` over it needs a new arm. It is a separate category from `Unsupported`
+  because the two call for opposite responses: `Unsupported` means the backend
+  cannot do this at all, while `ResourceExhausted` means it can, but a resource
+  could not be allocated right now — retrying or shrinking the problem is
+  sensible for the latter and futile for the former.
+
 ### Fixed
 
 - The MKL runtime's implicit dependencies are now forced into the test binaries
@@ -52,3 +60,11 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   recovered at solve time) and the check runs ahead of the `cfg` dispatch
   rather than only on the aarch64 arm. A mismatched length now returns
   `ErrorKind::InvalidArgument`.
+
+- `FftPlan::new` no longer reports resource exhaustion as
+  `ErrorKind::Unsupported` on Apple Silicon (issue #31). When a length is one
+  vDSP *can* plan but the setup handle comes back null, the failure was
+  classified `Unsupported` — telling callers to give up on a length that works,
+  and contradicting the comment sitting directly above the code. Both arms
+  (interleaved and split) now return `ErrorKind::ResourceExhausted`. A genuinely
+  unplannable length still returns `Unsupported`.

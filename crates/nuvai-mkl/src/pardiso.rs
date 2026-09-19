@@ -365,8 +365,28 @@ impl Pardiso {
             };
             if factor.status != nuvai_mkl_sys::SparseStatusOK {
                 let status = factor.status;
-                // SAFETY: `factor` is an owned, initialized factorization;
-                // released exactly once on this error path (it was never cached).
+                // A *failed* factorization is still destroyed here — do not
+                // "fix" this by skipping the release when `status != OK` (#30).
+                // Apple's docs for `SparseOpaqueFactorization_Double`
+                // (Sparse/Solve.h) list four states, three of which have
+                // `status < 0` yet still own memory:
+                //   state 1: `.symbolicFactorization.status < 0` — nothing valid;
+                //   state 2: `symbolic >= 0 && status < 0 && numeric == NULL` —
+                //            symbolic is valid and "may be used for future calls";
+                //   state 3: `symbolic >= 0 && status < 0 && numeric != NULL` —
+                //            "factor allocated/initialized correctly, but numeric
+                //            factorization failed" (e.g. Cholesky of an
+                //            indefinite matrix).
+                // The type docs say to free "these objects" with `SparseCleanup`,
+                // and `SparseCleanup` (Sparse/SolveImplementationTyped.h) is a
+                // static inline that calls `_SparseDestroyOpaqueNumeric`
+                // unconditionally — with no status check. Skipping the release
+                // would leak the failed factorization.
+                //
+                // SAFETY: `factor` is an owned, initialized factorization in one
+                // of those states (the struct is returned by value and fully
+                // populated); released exactly once on this error path, since it
+                // was never cached.
                 unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
                 return Err(Error::mkl(status, "_SparseFactorQR_Double"));
             }

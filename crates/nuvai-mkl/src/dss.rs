@@ -106,8 +106,22 @@ impl Dss {
             };
             if factor.status != nuvai_mkl_sys::SparseStatusOK {
                 let status = factor.status;
-                // SAFETY: `factor` is an owned, initialized factorization; this
-                // releases it exactly once on the error path.
+                // A *failed* factorization is still destroyed here — do not
+                // "fix" this by skipping the release when `status != OK` (#30).
+                // A `status < 0` object is not necessarily empty: of the four
+                // states Apple documents for `SparseOpaqueFactorization_Double`
+                // (Sparse/Solve.h), state 2 keeps a valid symbolic factorization
+                // and state 3 keeps an allocated numeric factor, both under a
+                // negative status. Apple's own `SparseCleanup`
+                // (Sparse/SolveImplementationTyped.h) calls
+                // `_SparseDestroyOpaqueNumeric` unconditionally, with no status
+                // test, so skipping it would leak. This path is exercised by
+                // `dss_rejects_lower_triangle_on_aarch64`, where Accelerate
+                // rejects the matrix and returns a non-OK factor.
+                //
+                // SAFETY: `factor` is an owned, initialized factorization
+                // returned by value; this releases it exactly once on the error
+                // path.
                 unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
                 return Err(Error::mkl(status, "_SparseFactorSymmetric_Double"));
             }

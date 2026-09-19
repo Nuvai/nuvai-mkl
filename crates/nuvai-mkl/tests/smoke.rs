@@ -1061,6 +1061,12 @@ fn pardiso_detects_singular_on_aarch64() {
 fn dss_rejects_lower_triangle_on_aarch64() {
     // Same SPD matrix as `dss_solve_2x2` but stored as the *lower* triangle,
     // which the Accelerate Cholesky backend does not accept.
+    //
+    // This is also the test that exercises the non-OK destroy path: the rejected
+    // matrix comes back as a factorization with `status != SparseStatusOK`, which
+    // `Dss::factor_symmetric` still releases. Reaching the assertion at all
+    // shows that release is safe on a failed factor — see the comment there and
+    // #30, where skipping it was proposed.
     let row_index = [0i32, 1, 3];
     let columns = [0i32, 0, 1];
     let values = [4.0f64, 1.0, 3.0];
@@ -1070,10 +1076,30 @@ fn dss_rejects_lower_triangle_on_aarch64() {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn fft_rejects_unsupported_length_on_aarch64() {
+    use nuvai_mkl::error::ErrorKind;
+
     // 7 is prime and not a product of {2,3,5}, so vDSP cannot plan it. The
     // wrapper must surface an error rather than fail on a null setup.
     assert!(fft::FftPlan::new_c32(7).is_err());
     assert!(fft::FftPlan::new_c64(7).is_err());
+
+    // The *kind* is the point of #31: a length vDSP cannot plan is
+    // `Unsupported` ("give up"), which is a different answer from the
+    // `ResourceExhausted` a failed setup now returns ("this works, but not right
+    // now"). Pinning it here keeps a blanket reclassification of all three
+    // `create` arms from passing unnoticed.
+    //
+    // The `ResourceExhausted` arm is deliberately not covered: forcing vDSP to
+    // return a null setup needs a length large enough to exhaust the allocator,
+    // and measured on macOS 26 the planner grinds on such a length for tens of
+    // seconds rather than failing fast (a probe at 2^40 was still allocating
+    // after 45s of CPU and had to be killed), so a test for it would hang CI.
+    for err in [
+        fft::FftPlan::new_c32(7).err().unwrap(),
+        fft::FftPlan::new_c64(7).err().unwrap(),
+    ] {
+        assert_eq!(err.kind(), ErrorKind::Unsupported, "{err}");
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

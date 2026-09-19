@@ -76,6 +76,17 @@ fn main() {
                     "nuvai-mkl-src published no DEP_MKL_* metadata — it must stay in this \
                      crate's [build-dependencies] for Cargo to forward it",
                 );
+                // The published paths are a snapshot that nothing re-derives
+                // when `~/.cache/nuvai-mkl` is cleared, so check rather than let
+                // bindgen report the missing header as a parse failure.
+                if !info.include_dir.is_dir() {
+                    panic!(
+                        "the MKL include directory nuvai-mkl-src published, {}, no longer \
+                         exists. If the MKL cache was cleared, force acquisition to re-run \
+                         with `cargo clean -p nuvai-mkl-src` and rebuild.",
+                        info.include_dir.display()
+                    );
+                }
                 eprintln!(
                     "[nuvai-mkl-sys] binding oneMKL {} from {}",
                     nuvai_mkl_src::MKL_VERSION,

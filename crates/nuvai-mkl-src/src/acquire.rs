@@ -44,6 +44,10 @@ const WIN_TBB: &str = "tbb-2021.10.0-h91493d7_2.conda";
 // SHA-256 of each pinned conda-forge package (from api.anaconda.org/dist).
 // Pinning the digest lets `download()` reject a tampered or corrupted archive
 // before it is extracted into the linker search path.
+//
+// The pinned filenames and digests must stay in *this* file: CI keys its
+// conda-download cache on `.github/workflows/ci.yml`'s `hashFiles` of this
+// path, so moving them elsewhere would leave that cache silently stale.
 const LINUX_MKL_SHA256: &str = "c68967a13488684d87fb7ac77b73c6f3f825f2da403707a14e75374c0ce3629f";
 const LINUX_INCLUDE_SHA256: &str = "6a8869386f70c5b9d49d02872cf172d2b2a84687509be54f40a5a1c4eddafa97";
 const WIN_MKL_SHA256: &str = "ff355522fb0b6e33841167d9ca749147c8734d8be07b63b2ce25b0db043f42ed";

@@ -75,9 +75,11 @@ impl MklInfo {
     /// expensive path, a conda-forge download, happens once for the whole build
     /// graph rather than once per dependent.
     ///
-    /// Returns `None` when the variables are absent. That is the case on the
-    /// aarch64 backends, where nothing is acquired and only `BACKEND` is
-    /// published, and whenever this is called outside a build script.
+    /// Returns `None` when the variables are absent or inconsistent — an
+    /// absent required key, or a `DLL_DIR_COUNT` that disagrees with the
+    /// directories published beside it. The variables are absent on the aarch64
+    /// backends, where nothing is acquired and only `BACKEND` is published, and
+    /// whenever this is called outside a build script.
     pub fn from_build_metadata() -> Option<Self> {
         Self::from_lookup(|key| env::var(key).ok())
     }
@@ -93,12 +95,19 @@ impl MklInfo {
         // beside MKL where the loader finds it unaided.
         let omp_lib_dir = lookup("DEP_MKL_OMP_LIB_DIR").map(PathBuf::from);
         // Indexed rather than a repeated `DLL_DIR`: Cargo keeps only the *last*
-        // value for a repeated metadata key, so emitting one key in a loop
-        // publishes exactly the final directory. Scan until the first gap, which
-        // is why the emitter writes contiguous indices from zero.
-        let mut dll_dirs = Vec::new();
-        while let Some(dir) = lookup(&format!("DEP_MKL_DLL_DIR_{}", dll_dirs.len())) {
-            dll_dirs.push(PathBuf::from(dir));
+        // value for a repeated metadata key, so one key emitted in a loop
+        // publishes exactly the final directory.
+        //
+        // The count is required alongside the indices, because indices alone
+        // cannot distinguish a complete list from a truncated one — and a
+        // silently short list is a missing `PATH` entry, which surfaces as a DLL
+        // that fails to load at run time rather than as a build error. A count
+        // that disagrees with the keys present is therefore `None`, which callers
+        // turn into a loud failure.
+        let count: usize = lookup("DEP_MKL_DLL_DIR_COUNT")?.parse().ok()?;
+        let mut dll_dirs = Vec::with_capacity(count);
+        for i in 0..count {
+            dll_dirs.push(PathBuf::from(lookup(&format!("DEP_MKL_DLL_DIR_{i}"))?));
         }
         Some(Self {
             include_dir,
@@ -131,6 +140,7 @@ mod mkl_info_tests {
             ("DEP_MKL_INCLUDE_DIR", "/mkl/include"),
             ("DEP_MKL_LIB_DIR", "/mkl/lib"),
             ("DEP_MKL_OMP_LIB_DIR", "/omp/lib"),
+            ("DEP_MKL_DLL_DIR_COUNT", "2"),
             ("DEP_MKL_DLL_DIR_0", "/mkl/Library/bin"),
             ("DEP_MKL_DLL_DIR_1", "/omp/Library/bin"),
         ])
@@ -155,45 +165,81 @@ mod mkl_info_tests {
         );
     }
 
-    /// The two required keys are required: a build script that saw only part of
-    /// the metadata must fail loudly rather than proceed with a bogus `"."`.
+    /// The required keys are required: a build script that saw only part of the
+    /// metadata must fail loudly rather than proceed with a bogus `"."` — or,
+    /// worse for `DLL_DIR_COUNT`, with a `PATH` that is missing an entry.
     #[test]
     fn required_fields_are_required() {
+        let with_count = |extra: &[(&str, &str)]| {
+            let mut pairs = vec![
+                ("DEP_MKL_INCLUDE_DIR", "/mkl/include"),
+                ("DEP_MKL_LIB_DIR", "/mkl/lib"),
+                ("DEP_MKL_DLL_DIR_COUNT", "0"),
+            ];
+            pairs.extend_from_slice(extra);
+            from_pairs(&pairs)
+        };
+
         assert!(from_pairs(&[("DEP_MKL_LIB_DIR", "/mkl/lib")]).is_none());
         assert!(from_pairs(&[("DEP_MKL_INCLUDE_DIR", "/mkl/include")]).is_none());
         assert!(from_pairs(&[]).is_none());
+        // The count is required too: without it the list length is unknowable.
+        assert!(
+            from_pairs(&[
+                ("DEP_MKL_INCLUDE_DIR", "/mkl/include"),
+                ("DEP_MKL_LIB_DIR", "/mkl/lib"),
+            ])
+            .is_none(),
+            "a missing DLL_DIR_COUNT must not read as `no directories`"
+        );
+        assert!(with_count(&[]).is_some(), "a count of zero is a valid list");
     }
 
     /// The aarch64 backends acquire nothing, so a caller reaching this on an
     /// unsupported-target build gets `None` — never a partly-filled struct.
+    /// Linux is the same shape one step in: it has an install, but no DLLs.
     #[test]
     fn the_optional_fields_may_be_absent() {
         let info = from_pairs(&[
             ("DEP_MKL_INCLUDE_DIR", "/mkl/include"),
             ("DEP_MKL_LIB_DIR", "/mkl/lib"),
+            ("DEP_MKL_DLL_DIR_COUNT", "0"),
         ])
-        .expect("both required variables present");
+        .expect("all required variables present");
 
         assert_eq!(info.omp_lib_dir, None);
         assert!(info.dll_dirs().is_empty());
         assert_eq!(info.dll_dir(), None);
     }
 
-    /// A gap ends the scan. The emitter writes contiguous indices, so a gap
-    /// means the remaining entries are from some other source and must not be
-    /// guessed at.
+    /// A count that overruns the indices is rejected rather than silently
+    /// shortened: that is the one failure the indices alone cannot express, and
+    /// its symptom would be a DLL directory missing from `PATH` at run time.
     #[test]
-    fn the_dll_scan_stops_at_the_first_gap() {
-        let info = from_pairs(&[
+    fn a_count_beyond_the_published_indices_is_rejected() {
+        let pairs = [
             ("DEP_MKL_INCLUDE_DIR", "/mkl/include"),
             ("DEP_MKL_LIB_DIR", "/mkl/lib"),
+            ("DEP_MKL_DLL_DIR_COUNT", "3"),
             ("DEP_MKL_DLL_DIR_0", "/first"),
-            // no _1
-            ("DEP_MKL_DLL_DIR_2", "/skipped"),
-        ])
-        .expect("both required variables present");
+        ];
+        assert!(from_pairs(&pairs).is_none());
 
-        assert_eq!(info.dll_dirs(), [PathBuf::from("/first")]);
+        // And a count that under-reports is not silently accepted as a prefix
+        // either — the extra key means the two were not written together.
+        let pairs = [
+            ("DEP_MKL_INCLUDE_DIR", "/mkl/include"),
+            ("DEP_MKL_LIB_DIR", "/mkl/lib"),
+            ("DEP_MKL_DLL_DIR_COUNT", "1"),
+            ("DEP_MKL_DLL_DIR_0", "/first"),
+            ("DEP_MKL_DLL_DIR_1", "/second"),
+        ];
+        let info = from_pairs(&pairs).expect("count and _0 are consistent");
+        assert_eq!(
+            info.dll_dirs(),
+            [PathBuf::from("/first")],
+            "the count is authoritative; an extra index is ignored, not appended"
+        );
     }
 
     #[test]

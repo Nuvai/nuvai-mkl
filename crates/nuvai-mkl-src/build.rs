@@ -133,8 +133,11 @@ fn emit_intel_mkl(target_os: &str) {
     // this used before is not a directive at all: Cargo read it as *legacy*
     // metadata under the literal key `metadata`, so every line below was
     // recorded as `DEP_MKL_METADATA="BACKEND=…"` and none of these variables
-    // existed. Nothing consumed them, which is why it went unnoticed — CI
-    // still re-derives the Windows DLL directories by globbing the cache layout.
+    // existed. Nothing consumed them, which is why it went unnoticed.
+    //
+    // CI does not read `DLL_DIR_*` either, and should not: it prepends the
+    // directories to `PATH` for the test process, which a build script cannot do
+    // for anyone — hence the PowerShell step that globs the cache layout.
     println!("cargo::metadata=INCLUDE_DIR={}", info.include_dir.display());
     println!("cargo::metadata=LIB_DIR={}", info.lib_dir.display());
     if let Some(omp) = &info.omp_lib_dir {
@@ -142,8 +145,13 @@ fn emit_intel_mkl(target_os: &str) {
     }
     // Indexed, not repeated: Cargo keeps only the *last* value for a repeated
     // metadata key, so the loop this replaces published exactly one directory —
-    // whichever happened to be extracted last. `MklInfo::from_build_metadata`
-    // scans these from zero until the first gap.
+    // whichever happened to be extracted last.
+    //
+    // The count is published alongside the indices and required by the reader.
+    // Indices alone cannot distinguish "n directories" from "the first k of n",
+    // and a list that is silently short is a missing `PATH` entry, which fails
+    // as a DLL that will not load at run time rather than as a build error.
+    println!("cargo::metadata=DLL_DIR_COUNT={}", info.dll_dirs.len());
     for (i, dll_dir) in info.dll_dirs.iter().enumerate() {
         println!("cargo::metadata=DLL_DIR_{i}={}", dll_dir.display());
     }

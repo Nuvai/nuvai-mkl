@@ -16,6 +16,13 @@
 //! backend (`mkl_rt` on Intel, `-framework Accelerate`/`-lopenblas` on Apple
 //! Silicon, `-lopenblas` on Linux aarch64).
 //!
+//! The acquisition above happens in the **build script**, not in this library:
+//! it needs `ureq`/`zip`/`zstd`/`tar`/`sha2`, which are build-dependencies so
+//! that they stay out of the runtime graph of every downstream build (#24). A
+//! dependent build script reads the resolved paths back through
+//! [`MklInfo::from_build_metadata`] rather than acquiring a second time, so the
+//! expensive path — a conda-forge download — runs once per build graph.
+//!
 //! ## Platform support
 //!
 //! | Target | Backend |

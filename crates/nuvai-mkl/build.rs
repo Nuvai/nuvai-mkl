@@ -125,8 +125,27 @@ fn main() {
 /// which runs first, and publishes what it found — so re-running it here would
 /// repeat a conda-forge download that has already happened, once per dependent.
 fn mkl_info() -> nuvai_mkl_src::MklInfo {
-    nuvai_mkl_src::MklInfo::from_build_metadata().expect(
+    let info = nuvai_mkl_src::MklInfo::from_build_metadata().expect(
         "nuvai-mkl-src published no DEP_MKL_* metadata — it must stay in this crate's \
          [build-dependencies] for Cargo to forward it",
-    )
+    );
+    // Checked here rather than in `from_build_metadata`, which must stay a pure
+    // parse of what was published.
+    //
+    // The paths are a *snapshot*: `nuvai-mkl-src`'s build script records its
+    // fingerprint over its own sources and the env vars, not over
+    // `~/.cache/nuvai-mkl`, so clearing the cache does not re-run the
+    // acquisition. Re-deriving the paths here (which is what calling `locate()`
+    // used to do) was self-healing for that case; reading them back is not, so
+    // the failure is moved from the linker's `cannot find -lmkl_rt` to a message
+    // that says what to do.
+    if !info.lib_dir.is_dir() {
+        panic!(
+            "the MKL library directory nuvai-mkl-src published, {}, no longer exists. \
+             If the MKL cache was cleared, force acquisition to re-run with \
+             `cargo clean -p nuvai-mkl-src` and rebuild.",
+            info.lib_dir.display()
+        );
+    }
+    info
 }

@@ -1,6 +1,16 @@
 // The oneMKL acquisition machinery: locate the install on the system, or
 // download and extract it from conda-forge into a shared cache.
 //
+// Every decision here dispatches on the **target** (`CARGO_CFG_TARGET_*`), never
+// the host. A build script compiles for and runs on the host, so the
+// `#[cfg(target_arch = "aarch64")]` / `cfg!(target_os = ...)` gates this file
+// used to carry described the host instead — the trap the module docs of the
+// three `build.rs` files describe for backend selection, but in the code that
+// acquires. Two consequences, both fixed: cross-compiling to an Intel target
+// from Apple Silicon took `locate()`'s aarch64 panic arm instead of acquiring,
+// and cross-compiling to a Windows target from Linux fetched **linux-64** conda
+// packages.
+//
 // `build.rs` includes this file, and **only** `build.rs` (#24). It needs
 // `ureq`/`zip`/`zstd`/`tar`/`sha2`, and the library target must not: the two are
 // built from the same source through `include!`, and no `cfg` distinguishes "I
@@ -13,52 +23,34 @@
 // `build.rs` includes it immediately before this file, which is where the
 // `env`/`Path`/`PathBuf` names this file uses come from.
 
-#[cfg(not(target_arch = "aarch64"))]
 use std::fs;
-#[cfg(not(target_arch = "aarch64"))]
 use std::io::Read;
-#[cfg(not(target_arch = "aarch64"))]
 use sha2::Digest;
 
-#[cfg(not(target_arch = "aarch64"))]
 const CONDA_BASE: &str = "https://conda.anaconda.org/conda-forge";
-#[cfg(not(target_arch = "aarch64"))]
 const LINUX_MKL: &str = "mkl-2026.1.0-hecca717_243.conda";
-#[cfg(not(target_arch = "aarch64"))]
 const LINUX_INCLUDE: &str = "mkl-include-2026.1.0-ha770c72_243.conda";
-#[cfg(not(target_arch = "aarch64"))]
 const WIN_MKL: &str = "mkl-2026.1.0-hac47afa_233.conda";
-#[cfg(not(target_arch = "aarch64"))]
 const WIN_INCLUDE: &str = "mkl-include-2026.1.0-h57928b3_233.conda";
-#[cfg(not(target_arch = "aarch64"))]
 const WIN_DEVEL: &str = "mkl-devel-2026.1.0-h57928b3_233.conda";
 // The win-64 `mkl` package declares (at the conda level) dependencies on
 // `llvm-openmp` and `tbb` for its threading layers. Those runtime DLLs do not
 // ship in `mkl` itself, so a faithful conda-forge acquisition must fetch them
 // too: `libiomp5md.dll` (OpenMP runtime used by the default `mkl_intel_thread`
 // layer) and `tbb12.dll` (TBB threading layer).
-#[cfg(not(target_arch = "aarch64"))]
 const WIN_LLVM_OPENMP: &str = "llvm-openmp-22.1.8-h4fa8253_0.conda";
-#[cfg(not(target_arch = "aarch64"))]
 const WIN_TBB: &str = "tbb-2021.10.0-h91493d7_2.conda";
 
 // SHA-256 of each pinned conda-forge package (from api.anaconda.org/dist).
 // Pinning the digest lets `download()` reject a tampered or corrupted archive
 // before it is extracted into the linker search path.
-#[cfg(not(target_arch = "aarch64"))]
 const LINUX_MKL_SHA256: &str = "c68967a13488684d87fb7ac77b73c6f3f825f2da403707a14e75374c0ce3629f";
-#[cfg(not(target_arch = "aarch64"))]
 const LINUX_INCLUDE_SHA256: &str = "6a8869386f70c5b9d49d02872cf172d2b2a84687509be54f40a5a1c4eddafa97";
-#[cfg(not(target_arch = "aarch64"))]
 const WIN_MKL_SHA256: &str = "ff355522fb0b6e33841167d9ca749147c8734d8be07b63b2ce25b0db043f42ed";
-#[cfg(not(target_arch = "aarch64"))]
 const WIN_INCLUDE_SHA256: &str = "b8809ceb7ad6a48392dcfdc806959a5cbd7bd906c2a996c5650096694f3694e4";
-#[cfg(not(target_arch = "aarch64"))]
 const WIN_DEVEL_SHA256: &str = "102bcfa02484432086f72180e826cbca5db0203267871f1bf37a40e8080d8891";
-#[cfg(not(target_arch = "aarch64"))]
 const WIN_LLVM_OPENMP_SHA256: &str =
     "50c02902bb516eeb56680358f052be38b5bf74b40e78ea4b2a675e84957e7307";
-#[cfg(not(target_arch = "aarch64"))]
 const WIN_TBB_SHA256: &str = "e55a2f1324f0fc8916ab8d590a3944ba1af62de727bb66e3019cf2744d26e679";
 // The linux-64 `mkl` package's `libmkl_intel_thread.so.3` leaves its OpenMP
 // `omp_*` symbols undefined (no DT_NEEDED on the runtime), exactly as the
@@ -66,41 +58,55 @@ const WIN_TBB_SHA256: &str = "e55a2f1324f0fc8916ab8d590a3944ba1af62de727bb66e301
 // explicitly. conda-forge ships it as `llvm-openmp` on both platforms (the
 // `intel-openmp` package is win-64 only); on linux-64 it provides
 // `libiomp5.so` (a symlink to `libomp.so`).
-#[cfg(not(target_arch = "aarch64"))]
 const LINUX_LLVM_OPENMP: &str = "llvm-openmp-22.1.8-h4922eb0_0.conda";
-#[cfg(not(target_arch = "aarch64"))]
 const LINUX_LLVM_OPENMP_SHA256: &str =
     "a37aba21b85800af1e7c5b04ba76abab96b6e591eedf99dc6e4df83b0fefd7a5";
+
+/// The target OS Cargo is building for — `CARGO_CFG_TARGET_OS`, which Cargo
+/// sets for every build script.
+///
+/// Read rather than `cfg!`-ed: a build script's `cfg!` describes the host. See
+/// the module docs.
+fn target_os() -> String {
+    env::var("CARGO_CFG_TARGET_OS").expect("Cargo sets CARGO_CFG_TARGET_OS for build scripts")
+}
+
+/// The target architecture Cargo is building for — `CARGO_CFG_TARGET_ARCH`.
+/// See [`target_os`].
+fn target_arch() -> String {
+    env::var("CARGO_CFG_TARGET_ARCH").expect("Cargo sets CARGO_CFG_TARGET_ARCH for build scripts")
+}
 
 /// Locate MKL: a system oneAPI install first, then download from conda-forge.
 ///
 /// Intel ships no oneMKL for *any* aarch64 target (Apple Silicon or Linux/ARM),
-/// so on `aarch64` this panics with a clear pointer to the fallback path. The
-/// build script never calls it there (it dispatches on [`backend`] instead).
+/// so for an aarch64 *target* this panics with a clear pointer to the fallback
+/// path. The build script never calls it there (it dispatches on [`backend`]
+/// first), so the guard exists for a downstream build script calling `locate()`
+/// directly.
 ///
 /// This is not in the library target (#24) — build scripts read the metadata
 /// this crate's own build script published, via [`MklInfo::from_build_metadata`],
 /// rather than acquiring a second time.
 pub fn locate() -> MklInfo {
-    #[cfg(target_arch = "aarch64")]
-    {
+    // Keyed on the *target* arch. This was `#[cfg(target_arch = ...)]`, which in
+    // a build script describes the host — so an Apple Silicon host cross-building
+    // for Intel took this panic instead of acquiring, which is what blocked local
+    // Intel cross-checks.
+    if target_arch() == "aarch64" {
         panic!(
             "Intel oneMKL is unavailable on aarch64 (Intel ships x86_64 builds only); \
              select the Accelerate (macOS) or OpenBLAS (Linux/macOS) fallback via \
              nuvai_mkl_src::backend() instead of nuvai_mkl_src::locate()"
         );
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        if let Some(info) = system_mkl() {
-            return info;
-        }
-        download_mkl()
+    if let Some(info) = system_mkl() {
+        return info;
     }
+    download_mkl()
 }
 
 /// Detect a system oneAPI install via `MKLROOT` or a well-known path.
-#[cfg(not(target_arch = "aarch64"))]
 fn system_mkl() -> Option<MklInfo> {
     let root = env::var("MKLROOT")
         .ok()
@@ -123,7 +129,7 @@ fn system_mkl() -> Option<MklInfo> {
     };
     // Windows oneAPI installs keep the runtime DLLs under `bin` (or the
     // conda-style `Library/bin`); the Unix loader finds them via rpath.
-    let dll_dirs: Vec<PathBuf> = if cfg!(target_os = "windows") {
+    let dll_dirs: Vec<PathBuf> = if target_os() == "windows" {
         [root.join("Library").join("bin"), root.join("bin")]
             .into_iter()
             .filter(|p| p.exists())
@@ -135,22 +141,19 @@ fn system_mkl() -> Option<MklInfo> {
 }
 
 /// One downloadable conda package: `(filename, sha256)`.
-#[cfg(not(target_arch = "aarch64"))]
 type Pkg<'a> = (&'a str, &'a str);
 
 /// The package set for one platform: base MKL, headers, an optional `devel`
 /// package (Windows import libs), and the runtime packages.
-#[cfg(not(target_arch = "aarch64"))]
 type PkgSet<'a> = (Pkg<'a>, Pkg<'a>, Option<Pkg<'a>>, &'a [Pkg<'a>]);
 
 /// Download + extract MKL into the shared cache, returning its paths.
-#[cfg(not(target_arch = "aarch64"))]
 fn download_mkl() -> MklInfo {
     let pkg_dir = cache_dir().join(format!("mkl-{MKL_VERSION}"));
 
     let ((mkl_file, mkl_sha), (include_file, include_sha), devel, runtime): PkgSet<'_> =
-        match (cfg!(target_os = "linux"), cfg!(target_os = "windows")) {
-        (true, _) => (
+        match target_os().as_str() {
+        "linux" => (
             (LINUX_MKL, LINUX_MKL_SHA256),
             (LINUX_INCLUDE, LINUX_INCLUDE_SHA256),
             None,
@@ -161,15 +164,15 @@ fn download_mkl() -> MklInfo {
         // OpenMP runtime (`libiomp5md.dll` from `llvm-openmp`) and the TBB
         // threading layer (`tbb12.dll` from `tbb`), which `mkl` declares as
         // conda dependencies but which do not ship inside `mkl` itself.
-        (_, true) => (
+        "windows" => (
             (WIN_MKL, WIN_MKL_SHA256),
             (WIN_INCLUDE, WIN_INCLUDE_SHA256),
             Some((WIN_DEVEL, WIN_DEVEL_SHA256)),
             &[(WIN_LLVM_OPENMP, WIN_LLVM_OPENMP_SHA256), (WIN_TBB, WIN_TBB_SHA256)][..],
         ),
-        _ => panic!(
-            "unsupported target for Intel oneMKL {MKL_VERSION}: MKL is x86_64 \
-             Linux/Windows only. On aarch64 use the `accelerate`/`openblas` fallback."
+        other => panic!(
+            "unsupported target for Intel oneMKL {MKL_VERSION}: {other} is not x86_64 \
+             Linux/Windows. On aarch64 use the `accelerate`/`openblas` fallback."
         ),
     };
 
@@ -208,7 +211,6 @@ fn download_mkl() -> MklInfo {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 fn fetch_and_extract_conda(file: &str, sha256: &str, pkg_dir: &Path) -> PathBuf {
     let url = format!("{CONDA_BASE}/{}/{}", conda_subdir(), file);
     let dest = pkg_dir.join(file);
@@ -228,7 +230,6 @@ fn fetch_and_extract_conda(file: &str, sha256: &str, pkg_dir: &Path) -> PathBuf 
 
 /// Confirm `path` hashes to `expected` (the pinned conda-forge digest),
 /// panicking with a clear pointer to clear the cache if it does not.
-#[cfg(not(target_arch = "aarch64"))]
 fn verify_sha256(path: &Path, expected: &str, file: &str) {
     let mut archive = fs::File::open(path)
         .unwrap_or_else(|e| panic!("open downloaded archive {}: {e}", path.display()));
@@ -253,16 +254,14 @@ fn verify_sha256(path: &Path, expected: &str, file: &str) {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 fn conda_subdir() -> &'static str {
-    if cfg!(target_os = "windows") {
+    if target_os() == "windows" {
         "win-64"
     } else {
         "linux-64"
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 fn cache_dir() -> PathBuf {
     // `HOME` is commonly unset in stock Windows shells; fall back to
     // `USERPROFILE` there so the cache does not silently land in `.`.
@@ -276,7 +275,6 @@ fn cache_dir() -> PathBuf {
     dir
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 fn download(url: &str, dest: &Path) {
     eprintln!("[nuvai-mkl-src] downloading {url}");
     let resp = ureq::get(url)
@@ -293,7 +291,6 @@ fn download(url: &str, dest: &Path) {
 }
 
 /// A `.conda` file is a ZIP containing `info-*.tar.zst` and `pkg-*.tar.zst`.
-#[cfg(not(target_arch = "aarch64"))]
 fn extract_conda(conda_path: &Path, dest: &Path) {
     let file = fs::File::open(conda_path).expect("open .conda");
     let mut zip = zip::ZipArchive::new(file).expect("open .conda as zip");

@@ -69,10 +69,17 @@ impl Error {
 
     /// A backend resource could not be allocated, though the operation itself
     /// is supported. See [`ErrorKind::ResourceExhausted`].
-    // Every caller sits behind `target_arch = "aarch64"` for the same reason as
-    // `unsupported` above (the vDSP setup path in `fft`), so it is dead on
-    // Intel, where every domain has a real MKL backend.
-    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+    // Its only callers are the vDSP setup arms of `fft`, which sit behind
+    // `all(target_os = "macos", target_arch = "aarch64")` — so it is dead on
+    // Intel *and* on aarch64-unknown-linux-gnu, where no vDSP backend exists.
+    // Gating on `target_arch` alone is not enough: that would leave the
+    // linux-aarch64 CI job (`cargo check`/`test`/`clippy`) warning that this is
+    // never used. Unlike `unsupported` above, which `unsupported_linux_aarch64`
+    // keeps reachable there.
+    #[cfg_attr(
+        not(all(target_os = "macos", target_arch = "aarch64")),
+        allow(dead_code)
+    )]
     pub(crate) fn resource_exhausted(message: impl Into<String>) -> Self {
         Self {
             kind: ErrorKind::ResourceExhausted,

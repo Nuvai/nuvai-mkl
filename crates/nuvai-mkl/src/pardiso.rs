@@ -383,6 +383,16 @@ impl Pardiso {
                 // unconditionally — with no status check. Skipping the release
                 // would leak the failed factorization.
                 //
+                // Both states are reachable here, not just one, and
+                // `pardiso_releases_failed_factorization_on_aarch64` pins each
+                // with its own matrix. Measured on macOS 26: an all-zero 2x2
+                // returns state 3 (`status == -2`,
+                // `symbolicFactorization.status == 0`, non-NULL numeric), while
+                // a structurally empty row returns state 1 (`status == -2`,
+                // `symbolicFactorization.status == -3`, NULL numeric) — the
+                // latter leaks nothing, but releasing it is still correct and is
+                // what `SparseCleanup` would do.
+                //
                 // SAFETY: `factor` is an owned, initialized factorization in one
                 // of those states (the struct is returned by value and fully
                 // populated); released exactly once on this error path, since it

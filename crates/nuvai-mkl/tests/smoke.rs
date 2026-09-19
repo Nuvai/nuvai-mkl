@@ -1058,19 +1058,104 @@ fn pardiso_detects_singular_on_aarch64() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
+fn pardiso_releases_failed_factorization_on_aarch64() {
+    use nuvai_mkl::error::ErrorKind;
+
+    // Regression test for the non-OK destroy path in `Pardiso::solve` (#30,
+    // which proposed *skipping* the release — doing so would leak).
+    //
+    // Two matrices reach the branch by different routes, and both states Apple
+    // documents are represented — see the comment at the release in
+    // `Pardiso::solve`:
+    //
+    // - all-zero 2x2 -> state 3: `_SparseFactorQR_Double` itself fails
+    //   (`status == -2`, `symbolicFactorization.status == 0`, non-NULL
+    //   `numericFactorization`), so there is an allocated numeric factor the
+    //   wrapper must release. This is *not* caught earlier by `check_residual`,
+    //   which is what handles the singular-but-non-zero matrix in
+    //   `pardiso_detects_singular_on_aarch64`.
+    // - structurally empty second row -> state 1 (`status == -2`,
+    //   `symbolicFactorization.status == -3`, NULL numeric): nothing valid, so
+    //   nothing leaks, but releasing is still correct and is what
+    //   `SparseCleanup` would do unconditionally.
+    //
+    // The kind assertion is load-bearing for the same reason as in
+    // `dss_releases_failed_factorization_on_aarch64`: `InvalidArgument` (the
+    // residual check) or `Unsupported` would mean this branch never ran.
+    let cases: [(&str, &[i32], &[i32], &[f64]); 2] = [
+        (
+            "all-zero 2x2 (state 3)",
+            &[1, 3, 5],
+            &[1, 2, 1, 2],
+            &[0.0, 0.0, 0.0, 0.0],
+        ),
+        (
+            "structurally empty second row (state 1)",
+            &[1, 2, 2],
+            &[1],
+            &[1.0],
+        ),
+    ];
+    for (label, ia, ja, a) in cases {
+        let b = [1.0f64, 1.0];
+        let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+        let err = solver
+            .solve(ia, ja, a, &b)
+            .err()
+            .unwrap_or_else(|| panic!("{label}: QR must fail"));
+        assert_eq!(err.kind(), ErrorKind::Mkl, "{label}: {err}");
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
 fn dss_rejects_lower_triangle_on_aarch64() {
     // Same SPD matrix as `dss_solve_2x2` but stored as the *lower* triangle,
     // which the Accelerate Cholesky backend does not accept.
     //
-    // This is also the test that exercises the non-OK destroy path: the rejected
-    // matrix comes back as a factorization with `status != SparseStatusOK`, which
-    // `Dss::factor_symmetric` still releases. Reaching the assertion at all
-    // shows that release is safe on a failed factor — see the comment there and
-    // #30, where skipping it was proposed.
+    // This test does *not* reach Accelerate: `Dss::factor_symmetric` rejects
+    // lower-triangle storage in its own CSR validation (`csr_to_csc`, the
+    // `upper_only` check) before `_SparseFactorSymmetric_Double` is called. It
+    // is a test of the wrapper's validation. The non-OK *destroy* path (#30) is
+    // covered separately by `dss_releases_failed_factorization_on_aarch64` —
+    // asserting only `is_err()` here cannot tell the two apart.
     let row_index = [0i32, 1, 3];
     let columns = [0i32, 0, 1];
     let values = [4.0f64, 1.0, 3.0];
     assert!(dss::Dss::factor_symmetric(&row_index, &columns, &values).is_err());
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn dss_releases_failed_factorization_on_aarch64() {
+    use nuvai_mkl::error::ErrorKind;
+
+    // Regression test for the non-OK destroy path in `Dss::factor_symmetric`
+    // (#30, which proposed *skipping* the release — doing so would leak).
+    //
+    // A = [[1, 2], [2, 1]] is symmetric indefinite (eigenvalues 3 and -1).
+    // Stored as the *upper* triangle so it clears the wrapper's `upper_only`
+    // validation and genuinely reaches Accelerate, where
+    // `SparseFactorizationCholesky` cannot factor it.
+    //
+    // The assertion on the *kind* is the whole point: `Mkl` means the
+    // factorization call ran and returned `status != SparseStatusOK`, so the
+    // release below it executed against a real failed factor. An
+    // `InvalidArgument` or `Unsupported` here would mean the matrix was
+    // rejected before Accelerate was ever called and the destroy never ran —
+    // which is exactly the false coverage that
+    // `dss_rejects_lower_triangle_on_aarch64` was mistakenly believed to give.
+    //
+    // Measured on macOS 26, this matrix returns state 3 (see the comment at the
+    // release): `status == -1`, `symbolicFactorization.status == 0`, non-NULL
+    // `numericFactorization`.
+    let row_index = [0i32, 2, 3];
+    let columns = [0i32, 1, 1];
+    let values = [1.0f64, 2.0, 1.0];
+    let err = dss::Dss::factor_symmetric(&row_index, &columns, &values)
+        .err()
+        .expect("Cholesky of an indefinite matrix must fail");
+    assert_eq!(err.kind(), ErrorKind::Mkl, "{err}");
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

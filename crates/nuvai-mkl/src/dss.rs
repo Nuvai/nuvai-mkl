@@ -115,9 +115,15 @@ impl Dss {
                 // negative status. Apple's own `SparseCleanup`
                 // (Sparse/SolveImplementationTyped.h) calls
                 // `_SparseDestroyOpaqueNumeric` unconditionally, with no status
-                // test, so skipping it would leak. This path is exercised by
-                // `dss_rejects_lower_triangle_on_aarch64`, where Accelerate
-                // rejects the matrix and returns a non-OK factor.
+                // test, so skipping it would leak.
+                //
+                // This path is exercised by
+                // `dss_releases_failed_factorization_on_aarch64`: an indefinite
+                // matrix fails Cholesky and comes back as state 3 — measured on
+                // macOS 26 as `status == -1`,
+                // `symbolicFactorization.status == 0` and a non-NULL
+                // `numericFactorization` — so the numeric factor returned here is
+                // real memory that this call must release.
                 //
                 // SAFETY: `factor` is an owned, initialized factorization
                 // returned by value; this releases it exactly once on the error

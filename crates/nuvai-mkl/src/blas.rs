@@ -7,6 +7,20 @@
 //! forwarded to MKL — which performs no bounds checking and would otherwise
 //! read/write out of bounds. Level-1 strides must be positive (a zero or
 //! negative stride would index below the slice).
+//!
+//! Every routine returns [`Result`], and that `Result` is load-bearing rather
+//! than vestigial (#38): it is the channel the validation above reports
+//! through. A routine returning `()` could only be honest about that if CBLAS
+//! checked its own operand bounds, which it does not — so removing the
+//! `Result` would put the heap out-of-bounds accesses back within reach of safe
+//! code, undoing #20. `sdot`/`ddot` return `Result<f32>`/`Result<f64>` under
+//! exactly the same rule, carrying a value alongside the same validation; they
+//! are not a second convention.
+//!
+//! A zero dimension is a no-op, not an error: [`check_matrix`] returns early for
+//! `rows == 0 || cols == 0` and [`check_vector`] for `n == 0`, matching the
+//! quick returns the BLAS routines themselves define for those cases. `lapack`
+//! answers those calls the same way since #37.
 
 use crate::error::{Error, Result};
 use crate::layout::{Layout, Transpose};

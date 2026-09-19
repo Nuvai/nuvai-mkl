@@ -6,9 +6,38 @@
 //! `dgetrf_`) — no LAPACKE — so the same public functions dispatch to those
 //! and translate `Layout::RowMajor` by transposing into column-major buffers,
 //! exactly as LAPACKE does internally (see ADR-0003, decision 5).
+//!
+//! A zero dimension is a legal no-op, not an error: LAPACK defines `?gesv` with
+//! `n == 0` or `nrhs == 0`, and `?getrf` with `m == 0` or `n == 0`, as a quick
+//! return that reads and writes nothing (#37). Those calls are accepted and
+//! answer `Ok(())` without reaching the backend — see [`Flow`]. Negative
+//! dimensions stay `InvalidArgument`, the outcome LAPACK's own argument
+//! checking produces for them.
 
 use crate::error::{Error, Result};
 use crate::layout::Layout;
+
+/// Whether a `?gesv`/`?getrf` call, once its arguments are validated, has work
+/// to do.
+///
+/// Retrofitted to the validators so a zero-order system is a no-op rather than
+/// an error (#37) — matching [`blas`](crate::blas), where `check_matrix` and
+/// `check_vector` have always treated a zero dimension that way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flow {
+    /// LAPACK's documented quick return: the call reads and writes nothing, so
+    /// the caller's buffers (and their lengths) are not constrained.
+    ///
+    /// The wrapper returns `Ok(())` from `Flow::NoOp` *itself*, and the backend
+    /// is never called. Delegating the quick return to LAPACK is not an option:
+    /// LAPACK's argument checks precede its quick return, so a zero-order
+    /// system with an `lda` below `max(1, n)` is malformed as far as it is
+    /// concerned and it would call `XERBLA` (which aborts by default) rather
+    /// than return cleanly.
+    NoOp,
+    /// Validation passed and the backend must be called.
+    Run,
+}
 
 /// Translate a [`Layout`] into the LAPACKE `matrix_layout` constant
 /// (`LAPACK_ROW_MAJOR` = 101, `LAPACK_COL_MAJOR` = 102). Only defined where
@@ -31,6 +60,13 @@ fn lapacke_layout(layout: Layout) -> i32 {
 /// Row-major input is transposed through scratch first, so its minimum
 /// sizes are the trailing-element bounds `(n-1)·lda + n` and
 /// `(n-1)·ldb + nrhs` rather than the full leading-dimension products.
+///
+/// The checks run in LAPACK's own order — argument sign, then leading
+/// dimensions, then the quick return — so that the leading dimensions are
+/// validated even when the call turns out to be a no-op, while the buffer
+/// lengths are not (nothing is read or written, so they cannot be wrong in a
+/// way that matters). The row-major length bound `(n-1)·lda + n` underflows at
+/// `n == 0`, which is the second reason the no-op has to return before it.
 fn check_solve_dims(
     layout: Layout,
     n: i32,
@@ -40,14 +76,11 @@ fn check_solve_dims(
     ipiv_len: usize,
     b_len: usize,
     ldb: i32,
-) -> Result<()> {
-    if n <= 0 || nrhs <= 0 {
-        return Err(Error::invalid("lapack: n and nrhs must be positive"));
+) -> Result<Flow> {
+    if n < 0 || nrhs < 0 {
+        return Err(Error::invalid("lapack: n and nrhs must be non-negative"));
     }
-    if ipiv_len < n as usize {
-        return Err(Error::invalid("lapack: ipiv too short"));
-    }
-    let (a_min, b_min) = match layout {
+    match layout {
         Layout::ColMajor => {
             if lda < n {
                 return Err(Error::invalid("lapack: lda < n"));
@@ -55,7 +88,6 @@ fn check_solve_dims(
             if ldb < n {
                 return Err(Error::invalid("lapack: ldb < n"));
             }
-            (lda as usize * n as usize, ldb as usize * nrhs as usize)
         }
         Layout::RowMajor => {
             if lda < n {
@@ -64,11 +96,20 @@ fn check_solve_dims(
             if ldb < nrhs {
                 return Err(Error::invalid("lapack: ldb < nrhs (row-major)"));
             }
-            (
-                (n - 1) as usize * lda as usize + n as usize,
-                (n - 1) as usize * ldb as usize + nrhs as usize,
-            )
         }
+    }
+    if n == 0 || nrhs == 0 {
+        return Ok(Flow::NoOp);
+    }
+    if ipiv_len < n as usize {
+        return Err(Error::invalid("lapack: ipiv too short"));
+    }
+    let (a_min, b_min) = match layout {
+        Layout::ColMajor => (lda as usize * n as usize, ldb as usize * nrhs as usize),
+        Layout::RowMajor => (
+            (n - 1) as usize * lda as usize + n as usize,
+            (n - 1) as usize * ldb as usize + nrhs as usize,
+        ),
     };
     if a_len < a_min {
         return Err(Error::invalid("lapack: a too short"));
@@ -76,7 +117,7 @@ fn check_solve_dims(
     if b_len < b_min {
         return Err(Error::invalid("lapack: b too short"));
     }
-    Ok(())
+    Ok(Flow::Run)
 }
 
 /// Validate a `?getrf` call's buffers (writes `m × n` with leading
@@ -86,6 +127,9 @@ fn check_solve_dims(
 /// `lda ≥ n` for `RowMajor` (rows are strided by `lda`, so a shorter stride
 /// makes consecutive rows overlap) and `lda ≥ m` for `ColMajor`, mirroring
 /// [`blas::check_matrix`](crate::blas).
+///
+/// Ordered like [`check_solve_dims`]: `lda` first (LAPACK checks it before its
+/// quick return), then the `m == 0 || n == 0` no-op, then the buffers.
 fn check_factor_dims(
     layout: Layout,
     m: i32,
@@ -93,9 +137,9 @@ fn check_factor_dims(
     a_len: usize,
     lda: i32,
     ipiv_len: usize,
-) -> Result<()> {
-    if m <= 0 || n <= 0 {
-        return Err(Error::invalid("lapack: m and n must be positive"));
+) -> Result<Flow> {
+    if m < 0 || n < 0 {
+        return Err(Error::invalid("lapack: m and n must be non-negative"));
     }
     let min_ld = match layout {
         Layout::ColMajor => m,
@@ -107,6 +151,9 @@ fn check_factor_dims(
             Layout::RowMajor => "lapack: lda < n (row-major)",
         }));
     }
+    if m == 0 || n == 0 {
+        return Ok(Flow::NoOp);
+    }
     if ipiv_len < m.min(n) as usize {
         return Err(Error::invalid("lapack: ipiv too short"));
     }
@@ -117,7 +164,7 @@ fn check_factor_dims(
     if a_len < a_min {
         return Err(Error::invalid("lapack: a too short"));
     }
-    Ok(())
+    Ok(Flow::Run)
 }
 
 /// Solve `A * X = B` for a general (non-symmetric) single-precision matrix.
@@ -136,7 +183,15 @@ pub fn sgesv(
     b: &mut [f32],
     ldb: i32,
 ) -> Result<()> {
-    check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?;
+    // A zero-order system (or an empty right-hand side) is LAPACK's quick
+    // return: nothing is read or written, so answer `Ok` here without the
+    // backend ever seeing the call.
+    if matches!(
+        check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?,
+        Flow::NoOp
+    ) {
+        return Ok(());
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         // SAFETY: `a`, `ipiv` and `b` cover at least the `lda·n`, `n` and
@@ -177,7 +232,15 @@ pub fn dgesv(
     b: &mut [f64],
     ldb: i32,
 ) -> Result<()> {
-    check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?;
+    // A zero-order system (or an empty right-hand side) is LAPACK's quick
+    // return: nothing is read or written, so answer `Ok` here without the
+    // backend ever seeing the call.
+    if matches!(
+        check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?,
+        Flow::NoOp
+    ) {
+        return Ok(());
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         // SAFETY: buffers cover the `lda·n` / `n` / `ldb·nrhs` elements that
@@ -220,7 +283,13 @@ pub fn sgetrf(
     lda: i32,
     ipiv: &mut [i32],
 ) -> Result<()> {
-    check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
+    // `m == 0 || n == 0` is LAPACK's quick return; see the `?gesv` guards above.
+    if matches!(
+        check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?,
+        Flow::NoOp
+    ) {
+        return Ok(());
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         // SAFETY: `a` reaches the trailing element `LAPACKE_sgetrf` writes —
@@ -262,7 +331,13 @@ pub fn dgetrf(
     lda: i32,
     ipiv: &mut [i32],
 ) -> Result<()> {
-    check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
+    // `m == 0 || n == 0` is LAPACK's quick return; see the `?gesv` guards above.
+    if matches!(
+        check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?,
+        Flow::NoOp
+    ) {
+        return Ok(());
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         // SAFETY: `a` reaches the trailing element `LAPACKE_dgetrf` writes —
@@ -350,7 +425,18 @@ mod aarch64 {
         b: &mut [f32],
         ldb: i32,
     ) -> Result<()> {
-        check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?;
+        // Re-checked here as well as in the public wrapper, which has already
+        // returned for a no-op — so this arm cannot be reached with one through
+        // the public API. Kept so the arm stays self-contained: the Fortran
+        // routines' quick return sits *after* their argument checks, so a
+        // zero-order system that did reach one with a small `lda` would abort
+        // through XERBLA rather than return cleanly.
+        if matches!(
+            check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?,
+            Flow::NoOp
+        ) {
+            return Ok(());
+        }
         let info = match layout {
             Layout::ColMajor => {
                 let mut info = 0i32;
@@ -420,7 +506,18 @@ mod aarch64 {
         b: &mut [f64],
         ldb: i32,
     ) -> Result<()> {
-        check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?;
+        // Re-checked here as well as in the public wrapper, which has already
+        // returned for a no-op — so this arm cannot be reached with one through
+        // the public API. Kept so the arm stays self-contained: the Fortran
+        // routines' quick return sits *after* their argument checks, so a
+        // zero-order system that did reach one with a small `lda` would abort
+        // through XERBLA rather than return cleanly.
+        if matches!(
+            check_solve_dims(layout, n, nrhs, a.len(), lda, ipiv.len(), b.len(), ldb)?,
+            Flow::NoOp
+        ) {
+            return Ok(());
+        }
         let info = match layout {
             Layout::ColMajor => {
                 let mut info = 0i32;
@@ -483,7 +580,15 @@ mod aarch64 {
         lda: i32,
         ipiv: &mut [i32],
     ) -> Result<()> {
-        check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
+        // Re-checked here as well as in the public wrapper, which has already
+        // returned for a no-op (see the `?gesv` arms above for why the arm keeps
+        // its own guard).
+        if matches!(
+            check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?,
+            Flow::NoOp
+        ) {
+            return Ok(());
+        }
         let info = match layout {
             Layout::ColMajor => {
                 let mut info = 0i32;
@@ -540,7 +645,15 @@ mod aarch64 {
         lda: i32,
         ipiv: &mut [i32],
     ) -> Result<()> {
-        check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?;
+        // Re-checked here as well as in the public wrapper, which has already
+        // returned for a no-op (see the `?gesv` arms above for why the arm keeps
+        // its own guard).
+        if matches!(
+            check_factor_dims(layout, m, n, a.len(), lda, ipiv.len())?,
+            Flow::NoOp
+        ) {
+            return Ok(());
+        }
         let info = match layout {
             Layout::ColMajor => {
                 let mut info = 0i32;

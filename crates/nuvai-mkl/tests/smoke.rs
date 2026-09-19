@@ -436,6 +436,176 @@ fn lapack_dgetrf_colmajor_lda_bound_control() {
     assert_eq!(err.kind(), ErrorKind::InvalidArgument);
 }
 
+/// #37: LAPACK defines a zero dimension as a legal *quick return* — `?gesv`
+/// with `n == 0` or `nrhs == 0`, `?getrf` with `m == 0` or `n == 0` — that
+/// reads and writes nothing. The wrapper rejected those outright, which also
+/// made `lapack` disagree with `blas`, whose `check_matrix`/`check_vector` have
+/// always accepted a zero dimension as a no-op.
+///
+/// These tests assert the *no-op*, not merely `Ok`: every buffer is pre-filled
+/// with a value the backend would never produce and compared afterwards, so a
+/// call that quietly reached C/Fortran (and, say, transposed through the
+/// row-major scratch buffers, or wrote a pivot) fails here instead of passing
+/// as "accepted". They are backend-independent: the wrapper returns before it
+/// dispatches, so the Accelerate/OpenBLAS and LAPACKE arms must agree.
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn lapack_sgesv_zero_dims_are_noops() {
+    use nuvai_mkl::error::ErrorKind;
+
+    let mut a = [7.0f32; 4];
+    let mut ipiv = [5i32; 4];
+    let mut b = [9.0f32; 4];
+
+    // `n == 0`: a zero-order system. `lda`/`ldb` are still validated (LAPACK
+    // checks them ahead of its quick return), so both are 1 here.
+    for layout in [Layout::ColMajor, Layout::RowMajor] {
+        lapack::sgesv(layout, 0, 1, &mut a, 1, &mut ipiv, &mut b, 1).unwrap();
+        assert_eq!(
+            (a, ipiv, b),
+            ([7.0f32; 4], [5i32; 4], [9.0f32; 4]),
+            "{layout:?}"
+        );
+    }
+
+    // `nrhs == 0`: the quick return precedes the factorization as well, so `a`
+    // and `ipiv` are left untouched too (the old code would have factored `a`
+    // into an LU the caller never asked for, had it accepted the call). `ldb`
+    // is still checked against `n` here, which is the point of validating the
+    // leading dimensions *before* the no-op return: `ldb = 1` is rejected even
+    // though nothing would be read.
+    for layout in [Layout::ColMajor, Layout::RowMajor] {
+        lapack::sgesv(layout, 2, 0, &mut a, 2, &mut ipiv, &mut b, 2).unwrap();
+        assert_eq!(
+            (a, ipiv, b),
+            ([7.0f32; 4], [5i32; 4], [9.0f32; 4]),
+            "{layout:?}"
+        );
+    }
+    let err = lapack::sgesv(Layout::ColMajor, 2, 0, &mut a, 2, &mut ipiv, &mut b, 1).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+
+    // The fully degenerate 0×0 problem with zero leading dimensions. This is
+    // the one case where the wrapper is deliberately more permissive than the
+    // Fortran routines, whose bound is `LDA >= max(1, n)`: no call is made, so
+    // there is nothing for that bound to protect, and the buffer lengths are
+    // unconstrained for the same reason (nothing is read).
+    lapack::sgesv(Layout::ColMajor, 0, 0, &mut [], 0, &mut [], &mut [], 0).unwrap();
+
+    // Negative dimensions stay rejected — that is LAPACK's own argument check,
+    // reported by the wrapper before any pointer moves. The kind is asserted
+    // rather than `is_err()` so a call that merely happened to fail inside MKL
+    // cannot be mistaken for the guard firing.
+    for (n, nrhs) in [(-1i32, 1i32), (2, -1)] {
+        let err =
+            lapack::sgesv(Layout::ColMajor, n, nrhs, &mut a, 2, &mut ipiv, &mut b, 2).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            ErrorKind::InvalidArgument,
+            "n = {n}, nrhs = {nrhs}"
+        );
+    }
+}
+
+/// Double-precision analogue of `lapack_sgesv_zero_dims_are_noops`.
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn lapack_dgesv_zero_dims_are_noops() {
+    use nuvai_mkl::error::ErrorKind;
+
+    let mut a = [7.0f64; 4];
+    let mut ipiv = [5i32; 4];
+    let mut b = [9.0f64; 4];
+
+    for layout in [Layout::ColMajor, Layout::RowMajor] {
+        lapack::dgesv(layout, 0, 1, &mut a, 1, &mut ipiv, &mut b, 1).unwrap();
+        assert_eq!(
+            (a, ipiv, b),
+            ([7.0f64; 4], [5i32; 4], [9.0f64; 4]),
+            "{layout:?}"
+        );
+
+        // `ldb >= n` still applies when only `nrhs` is zero — see the
+        // single-precision test for why that check survives the no-op.
+        lapack::dgesv(layout, 2, 0, &mut a, 2, &mut ipiv, &mut b, 2).unwrap();
+        assert_eq!(
+            (a, ipiv, b),
+            ([7.0f64; 4], [5i32; 4], [9.0f64; 4]),
+            "{layout:?}"
+        );
+    }
+    let err = lapack::dgesv(Layout::ColMajor, 2, 0, &mut a, 2, &mut ipiv, &mut b, 1).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+
+    lapack::dgesv(Layout::ColMajor, 0, 0, &mut [], 0, &mut [], &mut [], 0).unwrap();
+
+    for (n, nrhs) in [(-1i32, 1i32), (2, -1)] {
+        let err =
+            lapack::dgesv(Layout::ColMajor, n, nrhs, &mut a, 2, &mut ipiv, &mut b, 2).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            ErrorKind::InvalidArgument,
+            "n = {n}, nrhs = {nrhs}"
+        );
+    }
+}
+
+/// #37 for `?getrf`: `m == 0` or `n == 0` is the quick return, so the matrix
+/// and the pivot vector are left exactly as they were.
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn lapack_sgetrf_zero_dims_are_noops() {
+    use nuvai_mkl::error::ErrorKind;
+
+    // `lda = 3` clears the layout-dependent bound in all four combinations
+    // below (`lda >= m` column-major, `lda >= n` row-major), so the only thing
+    // that can reject these calls is the zero dimension itself.
+    let mut a = [7.0f32; 6];
+    let mut ipiv = [5i32; 3];
+
+    for (m, n) in [(0i32, 3i32), (3, 0), (0, 0)] {
+        for layout in [Layout::ColMajor, Layout::RowMajor] {
+            lapack::sgetrf(layout, m, n, &mut a, 3, &mut ipiv).unwrap();
+            assert_eq!(
+                (a, ipiv),
+                ([7.0f32; 6], [5i32; 3]),
+                "m = {m}, n = {n}, {layout:?}"
+            );
+        }
+    }
+
+    for (m, n) in [(-1i32, 3i32), (3, -1)] {
+        let err = lapack::sgetrf(Layout::ColMajor, m, n, &mut a, 3, &mut ipiv).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidArgument, "m = {m}, n = {n}");
+    }
+}
+
+/// Double-precision analogue of `lapack_sgetrf_zero_dims_are_noops`.
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn lapack_dgetrf_zero_dims_are_noops() {
+    use nuvai_mkl::error::ErrorKind;
+
+    let mut a = [7.0f64; 6];
+    let mut ipiv = [5i32; 3];
+
+    for (m, n) in [(0i32, 3i32), (3, 0), (0, 0)] {
+        for layout in [Layout::ColMajor, Layout::RowMajor] {
+            lapack::dgetrf(layout, m, n, &mut a, 3, &mut ipiv).unwrap();
+            assert_eq!(
+                (a, ipiv),
+                ([7.0f64; 6], [5i32; 3]),
+                "m = {m}, n = {n}, {layout:?}"
+            );
+        }
+    }
+
+    for (m, n) in [(-1i32, 3i32), (3, -1)] {
+        let err = lapack::dgetrf(Layout::ColMajor, m, n, &mut a, 3, &mut ipiv).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidArgument, "m = {m}, n = {n}");
+    }
+}
+
 #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn fft_roundtrip_c32() {

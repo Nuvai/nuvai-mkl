@@ -1058,9 +1058,62 @@ fn pardiso_detects_singular_on_aarch64() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
+fn pardiso_releases_failed_factorization_zero_matrix_on_aarch64() {
+    use nuvai_mkl::error::ErrorKind;
+
+    // Regression test for the non-OK destroy path in `Pardiso::solve` (#30,
+    // which proposed *skipping* the release — doing so would leak).
+    //
+    // The all-zero 2x2 reaches the branch as state 3 — see the comment at the
+    // release in `Pardiso::solve`: `_SparseFactorQR_Double` itself fails
+    // (`status == -2`, `symbolicFactorization.status == 0`, non-NULL
+    // `numericFactorization`), so there is an allocated numeric factor the
+    // wrapper must release. This is *not* caught earlier by `check_residual`,
+    // which is what handles the singular-but-non-zero matrix in
+    // `pardiso_detects_singular_on_aarch64`.
+    //
+    // The kind assertion is load-bearing for the same reason as in
+    // `dss_releases_failed_factorization_on_aarch64`: `InvalidArgument` (the
+    // residual check) or `Unsupported` would mean this branch never ran.
+    let ia = [1i32, 3, 5];
+    let ja = [1i32, 2, 1, 2];
+    let a = [0.0f64, 0.0, 0.0, 0.0];
+    let b = [1.0f64, 1.0];
+    let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+    let err = solver
+        .solve(&ia, &ja, &a, &b)
+        .expect_err("QR of the all-zero matrix must fail");
+    assert_eq!(err.kind(), ErrorKind::Mkl, "{err}");
+}
+
+// A structurally empty row (`ia = [1,2,2]`, `ja = [1]`) reaches the same
+// branch as a *different* state — state 1, `status == -2`,
+// `symbolicFactorization.status == -3`, NULL numeric — and there is
+// deliberately no test for it. Measured on the `macos-14` CI runner,
+// `_SparseFactorQR_Double` does not return that state there: it aborts the
+// process with SIGTRAP, so a test asserting on it can never pass in CI. A
+// probe that called the factorization and leaked the result without ever
+// calling `_SparseDestroyOpaqueNumeric` aborted identically, which places the
+// abort inside the factorization call and not in this wrapper's release.
+// macOS 26 returns the state-1 object normally.
+//
+// Nothing is lost by leaving it uncovered: state 1 keeps nothing valid, so
+// there is no memory to leak — the leak #30 was about is state 3, which the
+// test above does pin. Gating a state-1 test on the macOS version instead
+// would only look like coverage, since every CI runner is macOS 14.
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
 fn dss_rejects_lower_triangle_on_aarch64() {
     // Same SPD matrix as `dss_solve_2x2` but stored as the *lower* triangle,
     // which the Accelerate Cholesky backend does not accept.
+    //
+    // This test does *not* reach Accelerate: `Dss::factor_symmetric` rejects
+    // lower-triangle storage in its own CSR validation (`csr_to_csc`, the
+    // `upper_only` check) before `_SparseFactorSymmetric_Double` is called. It
+    // is a test of the wrapper's validation. The non-OK *destroy* path (#30) is
+    // covered separately by `dss_releases_failed_factorization_on_aarch64` —
+    // asserting only `is_err()` here cannot tell the two apart.
     let row_index = [0i32, 1, 3];
     let columns = [0i32, 0, 1];
     let values = [4.0f64, 1.0, 3.0];
@@ -1069,11 +1122,64 @@ fn dss_rejects_lower_triangle_on_aarch64() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
+fn dss_releases_failed_factorization_on_aarch64() {
+    use nuvai_mkl::error::ErrorKind;
+
+    // Regression test for the non-OK destroy path in `Dss::factor_symmetric`
+    // (#30, which proposed *skipping* the release — doing so would leak).
+    //
+    // A = [[1, 2], [2, 1]] is symmetric indefinite (eigenvalues 3 and -1).
+    // Stored as the *upper* triangle so it clears the wrapper's `upper_only`
+    // validation and genuinely reaches Accelerate, where
+    // `SparseFactorizationCholesky` cannot factor it.
+    //
+    // The assertion on the *kind* is the whole point: `Mkl` means the
+    // factorization call ran and returned `status != SparseStatusOK`, so the
+    // release below it executed against a real failed factor. An
+    // `InvalidArgument` or `Unsupported` here would mean the matrix was
+    // rejected before Accelerate was ever called and the destroy never ran —
+    // which is exactly the false coverage that
+    // `dss_rejects_lower_triangle_on_aarch64` was mistakenly believed to give.
+    //
+    // Measured on macOS 26, this matrix returns state 3 (see the comment at the
+    // release): `status == -1`, `symbolicFactorization.status == 0`, non-NULL
+    // `numericFactorization`.
+    let row_index = [0i32, 2, 3];
+    let columns = [0i32, 1, 1];
+    let values = [1.0f64, 2.0, 1.0];
+    let err = dss::Dss::factor_symmetric(&row_index, &columns, &values)
+        .err()
+        .expect("Cholesky of an indefinite matrix must fail");
+    assert_eq!(err.kind(), ErrorKind::Mkl, "{err}");
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
 fn fft_rejects_unsupported_length_on_aarch64() {
+    use nuvai_mkl::error::ErrorKind;
+
     // 7 is prime and not a product of {2,3,5}, so vDSP cannot plan it. The
     // wrapper must surface an error rather than fail on a null setup.
     assert!(fft::FftPlan::new_c32(7).is_err());
     assert!(fft::FftPlan::new_c64(7).is_err());
+
+    // The *kind* is the point of #31: a length vDSP cannot plan is
+    // `Unsupported` ("give up"), which is a different answer from the
+    // `ResourceExhausted` a failed setup now returns ("this works, but not right
+    // now"). Pinning it here keeps a blanket reclassification of all three
+    // `create` arms from passing unnoticed.
+    //
+    // The `ResourceExhausted` arm is deliberately not covered: forcing vDSP to
+    // return a null setup needs a length large enough to exhaust the allocator,
+    // and measured on macOS 26 the planner grinds on such a length for tens of
+    // seconds rather than failing fast (a probe at 2^40 was still allocating
+    // after 45s of CPU and had to be killed), so a test for it would hang CI.
+    for err in [
+        fft::FftPlan::new_c32(7).err().unwrap(),
+        fft::FftPlan::new_c64(7).err().unwrap(),
+    ] {
+        assert_eq!(err.kind(), ErrorKind::Unsupported, "{err}");
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

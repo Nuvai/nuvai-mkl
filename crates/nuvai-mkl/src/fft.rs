@@ -113,17 +113,27 @@ impl FftPlan {
             // minimum — it is carved out because macOS 14's vDSP mis-executes it
             // (see `interleaved_supports`, #53).
             let backend = if interleaved_supports(len) {
+                // A null setup here is *not* `Unsupported`: this branch was
+                // selected precisely because `interleaved_supports(len)` said
+                // vDSP can plan this length. The length is supported; creating
+                // the setup failed, which leaves resource exhaustion as the
+                // remaining cause. Reporting `Unsupported` would tell the caller
+                // to give up on a length that works — see #31.
                 Self::create_interleaved(length, single).ok_or_else(|| {
-                    Error::unsupported(format!(
+                    Error::resource_exhausted(format!(
                         "FFT length {len} is supported by vDSP's interleaved DFT \
-                         but the setup could not be created (out of memory?)"
+                         but its setup could not be created"
                     ))
                 })?
             } else if matches!(len, 2 | 4 | 8) {
+                // Same reasoning as the interleaved arm above: these lengths are
+                // known-good for the split family (2 and 4 plan directly; 8 is
+                // the #53 carve-out), so a null setup is resource exhaustion,
+                // not `Unsupported`.
                 Self::create_split(length, single).ok_or_else(|| {
-                    Error::unsupported(format!(
+                    Error::resource_exhausted(format!(
                         "FFT length {len} is supported by vDSP's split DFT \
-                         but the setup could not be created (out of memory?)"
+                         but its setup could not be created"
                     ))
                 })?
             } else {

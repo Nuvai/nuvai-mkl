@@ -9,6 +9,12 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ### Added
 
+- The conda-forge base URL `nuvai-mkl-src` fetches from is overridable through
+  `NUVAI_MKL_CONDA_BASE`, so a mirror can stand in when conda-forge's CDN
+  refuses a request (issue #19). Every archive is still checked against the
+  pinned SHA-256 it is fetched under, so a mirror cannot substitute different
+  bytes — it changes where the bytes come from, not what is accepted.
+
 - MKL error codes are decoded into descriptions (issue #33). `Error` now records
   which library's code space a status came from, and `Display` appends the
   meaning, so a sparse solve failure reads `MKL error (code -4): pardiso phase
@@ -108,6 +114,22 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   by declaring `c_ulong` where the symbol's signature expects `usize`.
 
 ### Fixed
+
+- A refused MKL download is reported as a refusal instead of as a corrupt cache
+  (issue #19). The CDN in front of conda-forge answered CI with `2xx` and a
+  **0-byte body**; `download()` wrote that empty file to disk, and the checksum
+  check then failed on it and reported `checksum mismatch … Delete <path> and
+  retry` — sending the reader to clear a cache that was never the problem, with
+  no HTTP status anywhere in the output to say what had actually happened. The
+  download now streams into `<dest>.part` and is renamed into place only once
+  the body is complete, so a refused or truncated transfer cannot be mistaken
+  for a cached success — which is what made the failure survive to the verifier
+  at all, since the extractor skips the download whenever `dest` exists. An
+  empty body, or a shortfall against a declared `Content-Length`, is reported
+  with its HTTP status and retried with backoff; and an archive that fails its
+  digest is deleted rather than left in place, which is also how a single bad
+  download used to outlive its cause on the Windows job, whose `actions/cache`
+  entry re-saves this directory when the job ends.
 
 - Enabling both backend features on Apple Silicon is a compile error instead of
   a silent choice (issue #35). `--features accelerate,openblas` resolved to

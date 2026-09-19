@@ -24,8 +24,17 @@
 // `env`/`Path`/`PathBuf` names this file uses come from.
 
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
+use std::time::Duration;
 use sha2::Digest;
+
+/// How many times to attempt one package download before giving up.
+///
+/// The CDN in front of conda-forge refuses transiently. Epic #19's CI run saw
+/// it answer `2xx` with an **empty body**, which the old `download()` wrote to
+/// disk and then reported as a *checksum* mismatch — i.e. as a corrupt cache,
+/// sending the reader to delete a file that was never the problem.
+const DOWNLOAD_ATTEMPTS: u32 = 3;
 
 const CONDA_BASE: &str = "https://conda.anaconda.org/conda-forge";
 const LINUX_MKL: &str = "mkl-2026.1.0-hecca717_243.conda";
@@ -227,8 +236,21 @@ fn download_mkl() -> MklInfo {
     }
 }
 
+/// Base URL the `.conda` packages are fetched from.
+///
+/// Overridable by `NUVAI_MKL_CONDA_BASE` for two reasons: a mirror can stand in
+/// when conda-forge's CDN refuses a request (epic #19 — every archive is still
+/// checked against its pinned digest, so a mirror cannot substitute different
+/// bytes), and the refusal path can be exercised against a server that returns
+/// it on demand. That last part matters because `acquire.rs` is included only
+/// by `build.rs`: nothing in this file is reachable from `cargo test`, so an
+/// end-to-end check of the download path has to run a real build.
+fn conda_base() -> String {
+    env::var("NUVAI_MKL_CONDA_BASE").unwrap_or_else(|_| CONDA_BASE.to_string())
+}
+
 fn fetch_and_extract_conda(file: &str, sha256: &str, pkg_dir: &Path) -> PathBuf {
-    let url = format!("{CONDA_BASE}/{}/{}", conda_subdir(), file);
+    let url = format!("{}/{}/{}", conda_base(), conda_subdir(), file);
     let dest = pkg_dir.join(file);
     if !dest.exists() {
         download(&url, &dest);
@@ -245,7 +267,7 @@ fn fetch_and_extract_conda(file: &str, sha256: &str, pkg_dir: &Path) -> PathBuf 
 }
 
 /// Confirm `path` hashes to `expected` (the pinned conda-forge digest),
-/// panicking with a clear pointer to clear the cache if it does not.
+/// removing the archive and panicking if it does not.
 fn verify_sha256(path: &Path, expected: &str, file: &str) {
     let mut archive = fs::File::open(path)
         .unwrap_or_else(|e| panic!("open downloaded archive {}: {e}", path.display()));
@@ -262,9 +284,15 @@ fn verify_sha256(path: &Path, expected: &str, file: &str) {
     }
     let actual = format!("{:x}", hasher.finalize());
     if actual != expected {
+        // Drop it. A file that failed its digest must not survive to be re-read
+        // by the next build — and on Windows CI this cache directory is exactly
+        // what `actions/cache` re-saves when the job ends, so leaving a bad
+        // archive in place is how one failed download becomes a sticky,
+        // self-inflicted failure that outlives the incident that caused it.
+        let _ = fs::remove_file(path);
         panic!(
             "checksum mismatch for {file}: expected {expected}, got {actual}. \
-             Delete {} and retry.",
+             Removed {}; re-run to download it again.",
             path.display()
         );
     }
@@ -291,19 +319,76 @@ fn cache_dir() -> PathBuf {
     dir
 }
 
+/// Download `url` to `dest`, retrying a refusal before giving up.
 fn download(url: &str, dest: &Path) {
-    eprintln!("[nuvai-mkl-src] downloading {url}");
-    let resp = ureq::get(url)
-        .call()
-        .unwrap_or_else(|e| panic!("failed to download {url}: {e}"));
-    let mut body = Vec::new();
-    resp.into_reader()
-        .read_to_end(&mut body)
-        .expect("read download body");
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).expect("create download parent dir");
+    let mut last = String::new();
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        if attempt > 1 {
+            // Back off between attempts: a CDN that is rate-limiting wants the
+            // gap, not another request.
+            let pause = Duration::from_secs(1 << (attempt - 1));
+            eprintln!(
+                "[nuvai-mkl-src] retrying in {pause:?} \
+                 (attempt {attempt}/{DOWNLOAD_ATTEMPTS}): {last}"
+            );
+            std::thread::sleep(pause);
+        }
+        match download_once(url, dest) {
+            Ok(()) => return,
+            Err(e) => last = e,
+        }
     }
-    fs::write(dest, body).expect("write downloaded archive");
+    panic!("failed to download {url} after {DOWNLOAD_ATTEMPTS} attempts: {last}");
+}
+
+/// One download attempt, streamed into `<dest>.part` and renamed into place
+/// only once the body is complete.
+///
+/// Writing straight to `dest` is what let a refused transfer pass for a cached
+/// success: [`fetch_and_extract_conda`] skips the download when `dest` exists,
+/// so an empty or truncated file survived to the verifier and was then reported
+/// as a checksum mismatch it did not cause (#19).
+fn download_once(url: &str, dest: &Path) -> Result<(), String> {
+    eprintln!("[nuvai-mkl-src] downloading {url}");
+    let resp = ureq::get(url).call().map_err(|e| format!("{e}"))?;
+    let status = resp.status();
+    let declared = resp
+        .header("Content-Length")
+        .and_then(|v| v.trim().parse::<u64>().ok());
+
+    let tmp = dest.with_extension("part");
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    let mut file =
+        fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
+    let written = io::copy(&mut resp.into_reader(), &mut file)
+        .map_err(|e| format!("read {url} body: {e}"))?;
+    drop(file);
+
+    if let Some(reason) = unusable_body(written, declared) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("HTTP {status} from {url}: {reason}"));
+    }
+    fs::rename(&tmp, dest).map_err(|e| format!("rename into {}: {e}", dest.display()))
+}
+
+/// Why a downloaded body cannot be used, or `None` when it can.
+///
+/// A `2xx` whose body is empty — or shorter than the `Content-Length` it
+/// declared — is how the CDN in front of conda-forge refuses a request it will
+/// not serve. That is a defence aimed at the caller, not evidence of a bad
+/// archive, and the two want different responses: a retry and a diagnostic
+/// here, versus clearing the cache there. A non-empty body is accepted when the
+/// response declared no length (chunked transfer); the pinned digest in
+/// [`verify_sha256`] stays the only gate in that case.
+fn unusable_body(written: u64, declared: Option<u64>) -> Option<String> {
+    if written == 0 {
+        return Some("empty body".to_string());
+    }
+    declared
+        .filter(|declared| *declared != written)
+        .map(|declared| format!("truncated body: {written} of {declared} bytes"))
 }
 
 /// A `.conda` file is a ZIP containing `info-*.tar.zst` and `pkg-*.tar.zst`.

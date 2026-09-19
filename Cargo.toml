@@ -16,10 +16,19 @@ homepage = "https://github.com/Nuvai/nuvai-mkl"
 keywords = ["mkl", "blas", "lapack", "fft", "onemkl"]
 categories = ["science", "external-ffi-bindings", "mathematics"]
 
+# `default-features = false` on the two backend-carrying edges is what makes
+# `--no-default-features` mean "no backend feature" instead of "whatever each
+# dependent re-enables" (#35). Feature selection is additive across the whole
+# graph, so an edge that leaves `default` on re-enables `accelerate` no matter
+# what the command line said — which is how the OpenBLAS CI job came to build
+# with *both* features and pass only because the both-features case silently
+# preferred OpenBLAS. Each package's own `default = ["accelerate"]` still turns
+# `accelerate` on for an ordinary build, because those declarations name the
+# feature explicitly rather than relying on the dependency's default.
 [workspace.dependencies]
-nuvai-mkl-src = { path = "crates/nuvai-mkl-src", version = "0.1.0" }
-nuvai-mkl-sys = { path = "crates/nuvai-mkl-sys", version = "0.1.0" }
-nuvai-mkl = { path = "crates/nuvai-mkl", version = "0.1.0" }
+nuvai-mkl-src = { path = "crates/nuvai-mkl-src", version = "0.1.0", default-features = false }
+nuvai-mkl-sys = { path = "crates/nuvai-mkl-sys", version = "0.1.0", default-features = false }
+nuvai-mkl = { path = "crates/nuvai-mkl", version = "0.1.0", default-features = false }
 
 [profile.release]
 opt-level = 3

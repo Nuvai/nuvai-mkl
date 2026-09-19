@@ -16,7 +16,9 @@ build = "build.rs"
 # emitter. `accelerate` (default) links the Accelerate framework on Apple
 # Silicon; `openblas` links -lopenblas instead. On aarch64-unknown-linux-gnu
 # OpenBLAS is the only backend and on Intel targets these flags are no-ops
-# (the fallback code is cfg(target_arch = "aarch64")-gated).
+# (the fallback code is cfg(target_arch = "aarch64")-gated). On
+# aarch64-apple-darwin exactly one must be enabled — enabling both is a
+# compile error (#35).
 default = ["accelerate"]
 accelerate = ["nuvai-mkl-src/accelerate"]
 openblas = ["nuvai-mkl-src/openblas"]

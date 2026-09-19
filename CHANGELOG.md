@@ -77,10 +77,11 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   the three C-naming lints its SDK-mirroring identifiers require. In particular
   `clippy::all` and `improper_ctypes` no longer cover hand-reviewed code —
   removing them surfaced a redundant `?Sized` bound in the `AmbiguousIfCopy`
-  compile-time guard, which is fixed rather than suppressed. `deref_nullptr`,
-  `unused_imports` and `suspicious_runtime_symbol_definitions` are dropped as
-  never-firing (the last covers *definitions* of runtime symbols, and this
-  workspace defines none).
+  compile-time guard, which is fixed rather than suppressed. `deref_nullptr`
+  and `unused_imports` are dropped as never-firing;
+  `suspicious_runtime_symbol_definitions` moves onto the generated module it
+  actually applies to, where bindgen's `malloc`/`realloc` declarations trip it
+  by declaring `c_ulong` where the symbol's signature expects `usize`.
 
 ### Fixed
 

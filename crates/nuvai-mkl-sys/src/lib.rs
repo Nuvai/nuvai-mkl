@@ -52,15 +52,18 @@ mod bindings {
     // * `clippy::all`, because generated code is neither reviewed nor
     //   hand-fixable — scoped *here* precisely so the hand-written surfaces are
     //   linted (that is how the redundant `?Sized` bound in `aarch64.rs`
-    //   surfaced, and how the wrapper crate's own `useless_conversion` did).
+    //   surfaced, and how the wrapper crate's own `useless_conversion` did);
+    // * `suspicious_runtime_symbol_definitions`, because bindgen declares the
+    //   `malloc`/`realloc` prototypes it finds in the transitively-included
+    //   stdlib headers, and declares `malloc` as `c_ulong` where rustc's model
+    //   of the symbol expects `usize`. The lint fires on that signature
+    //   mismatch — on the *declaration*, not only on a definition, which is
+    //   how it survived the audit below. Verified in CI: without this allow,
+    //   `x86_64-linux` reports exactly two warnings, one per symbol.
     //
-    // `deref_nullptr`, `unused_imports` and `suspicious_runtime_symbol_definitions`
-    // are deliberately *not* carried over. The first two were never observed to
-    // fire; the third is described by rustc as "suspicious definition of a symbol
-    // used by the standard library", and neither the generated output nor
-    // anything else in this workspace *defines* such a symbol — bindgen only
-    // declares `malloc`/`realloc`, which that lint does not cover. If this arm
-    // then warns in CI, add the specific lint back to this block with the
+    // `deref_nullptr` and `unused_imports` are deliberately *not* carried over:
+    // neither was observed to fire here or on the hand-written surfaces. If
+    // either ever does, add the specific lint back to this block with the
     // warning it silences, not to the crate root.
     #![allow(non_upper_case_globals)]
     #![allow(non_camel_case_types)]
@@ -68,6 +71,7 @@ mod bindings {
     #![allow(dead_code)]
     #![allow(improper_ctypes)]
     #![allow(clippy::all)]
+    #![allow(suspicious_runtime_symbol_definitions)]
 
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }

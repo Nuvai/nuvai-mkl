@@ -1256,21 +1256,82 @@ fn pardiso_releases_failed_factorization_zero_matrix_on_aarch64() {
     assert_eq!(err.kind(), ErrorKind::Mkl, "{err}");
 }
 
-// A structurally empty row (`ia = [1,2,2]`, `ja = [1]`) reaches the same
-// branch as a *different* state — state 1, `status == -2`,
-// `symbolicFactorization.status == -3`, NULL numeric — and there is
-// deliberately no test for it. Measured on the `macos-14` CI runner,
-// `_SparseFactorQR_Double` does not return that state there: it aborts the
-// process with SIGTRAP, so a test asserting on it can never pass in CI. A
-// probe that called the factorization and leaked the result without ever
-// calling `_SparseDestroyOpaqueNumeric` aborted identically, which places the
-// abort inside the factorization call and not in this wrapper's release.
-// macOS 26 returns the state-1 object normally.
-//
-// Nothing is lost by leaving it uncovered: state 1 keeps nothing valid, so
-// there is no memory to leak — the leak #30 was about is state 3, which the
-// test above does pin. Gating a state-1 test on the macOS version instead
-// would only look like coverage, since every CI runner is macOS 14.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn pardiso_rejects_structurally_empty_row_on_aarch64() {
+    use nuvai_mkl::error::ErrorKind;
+
+    // Regression test for #58: a CSR matrix with a structurally empty row used
+    // to be passed straight to `_SparseFactorQR_Double`, and on macOS 14 that
+    // call does not return — it aborts the process with SIGTRAP, which no
+    // caller can catch. `n = 2`; row 0 has one entry, row 1 has none.
+    //
+    // This test previously could not exist. It asserted nothing because the
+    // abort happened inside Accelerate and every CI runner is macOS 14, while
+    // this was authored on macOS 26 where the same input returns a state-1
+    // error object normally. Rejecting the input before the factorization is
+    // what makes the case testable *and* portable: the assertion below now
+    // holds on both macOS versions, because the call never reaches Accelerate.
+    //
+    // `InvalidArgument` specifically, not `is_err()`: it pins that the
+    // wrapper's own guard fired, rather than an error that arrived from
+    // Accelerate. A sanitizer or a macOS-14 CI job would be needed to observe
+    // the abort itself; the guard is what prevents it.
+    let ia = [1i32, 2, 2];
+    let ja = [1i32];
+    let a = [1.0f64];
+    let b = [1.0f64, 1.0];
+    let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+    let err = solver
+        .solve(&ia, &ja, &a, &b)
+        .expect_err("a structurally empty row describes a singular matrix");
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument, "{err}");
+
+    // The guard is positional-agnostic: the same single entry, moved to row 1,
+    // leaves row 0 empty and is rejected identically.
+    let ia = [1i32, 1, 2];
+    let err = solver
+        .solve(&ia, &ja, &a, &b)
+        .expect_err("leading empty row");
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument, "{err}");
+
+    // And the guard rejects nothing valid: a full 2x2 still solves.
+    let ia = [1i32, 3, 5];
+    let ja = [1i32, 2, 1, 2];
+    let a = [2.0f64, 1.0, 1.0, 3.0];
+    let x = solver.solve(&ia, &ja, &a, &[4.0f64, 7.0]).unwrap();
+    assert_close64(&x, &[1.0, 2.0], 1e-9);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn dss_rejects_structurally_empty_row_on_aarch64() {
+    use nuvai_mkl::error::ErrorKind;
+
+    // The same guard, through the shared CSR→CSC transposition that DSS's
+    // Cholesky path also calls (#58). A single empty row is a zero row of the
+    // full symmetric matrix, so it is singular here too — and the guard runs
+    // before either backend's factorization.
+    //
+    // `n = 2`, upper triangle, 0-based: row 0 carries the (0,1) entry and row 1
+    // is empty.
+    let row_index = [0i32, 1, 1];
+    let columns = [1i32];
+    let values = [1.0f64];
+    let err = dss::Dss::factor_symmetric(&row_index, &columns, &values)
+        .err()
+        .expect("a structurally empty row describes a singular matrix");
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument, "{err}");
+
+    // A complete upper triangle of the same shape still factors, so the guard
+    // rejects only the degenerate case.
+    let row_index = [0i32, 2, 3];
+    let columns = [0i32, 1, 1];
+    let values = [2.0f64, 1.0, 3.0];
+    let solver = dss::Dss::factor_symmetric(&row_index, &columns, &values).unwrap();
+    let x = solver.solve(&[4.0f64, 7.0]).unwrap();
+    assert_close64(&x, &[1.0, 2.0], 1e-9);
+}
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]

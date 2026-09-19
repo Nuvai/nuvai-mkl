@@ -496,7 +496,10 @@ impl Pardiso {
 ///
 /// This is the single validated CSR→CSC transposition shared by the PARDISO
 /// (nonsymmetric, 1-based) and DSS (symmetric, 0-based) aarch64 backends, so
-/// bounds/monotonicity checks apply to both.
+/// bounds/monotonicity checks apply to both — as does the rejection of a
+/// structurally empty row (a zero row, hence a singular matrix) that would
+/// otherwise reach Accelerate's factorization and abort the process on
+/// macOS 14 (#58).
 ///
 /// Callers supply the CSR contract rather than this function re-deriving it:
 /// `row_index` has `n + 1` entries and `values` is parallel to `columns`. Both
@@ -538,9 +541,38 @@ pub(crate) fn csr_to_csc(
     if i64::from(row_index[n]) != nnz as i64 + i64::from(base) {
         return Err(Error::invalid("CSR row_index[n] does not match nnz"));
     }
-    for w in row_index.windows(2) {
+    for (row, w) in row_index.windows(2).enumerate() {
         if w[1] < w[0] {
             return Err(Error::invalid("CSR row_index must be non-decreasing"));
+        }
+        // A structurally empty row (`row_index[row] == row_index[row + 1]`) is a
+        // zero row whatever the values are, so the matrix is singular and no
+        // backend can solve it. The reason it is rejected *here*, rather than
+        // left to the solver, is that Accelerate's QR path does not fail
+        // cleanly on one: on macOS 14 `_SparseFactorQR_Double` aborts the
+        // process with `SIGTRAP` instead of returning a status, and a `SIGTRAP`
+        // is not recoverable — a safe API must not let a caller reach it (#58).
+        // macOS 26 returns the state-1 error object instead, which is exactly
+        // the kind of platform split that makes "the caller will get an error"
+        // an unsafe assumption.
+        //
+        // The kind matches what the residual check reports for a singular
+        // matrix, so callers see one answer for "this system has no solution"
+        // regardless of how the singularity was detected. Intel PARDISO does
+        // not share this function and still reports an empty row as its own
+        // zero-pivot error at phase 22 — this guard closes a process abort, not
+        // a behavioural difference worth propagating to a path that already
+        // handles the input.
+        //
+        // `upper_only` is unaffected by the reasoning above: an empty row of
+        // the stored triangle leaves that row of the full symmetric matrix
+        // zero, since the reflected entries live in earlier rows. The check
+        // therefore applies to DSS's Cholesky path as well, which shares this
+        // transposition.
+        if w[1] == w[0] {
+            return Err(Error::invalid(format!(
+                "CSR row {row} has no entries — the matrix is structurally singular"
+            )));
         }
     }
 

@@ -1266,12 +1266,14 @@ fn pardiso_rejects_structurally_empty_row_on_aarch64() {
     // call does not return — it aborts the process with SIGTRAP, which no
     // caller can catch. `n = 2`; row 0 has one entry, row 1 has none.
     //
-    // This test previously could not exist. It asserted nothing because the
-    // abort happened inside Accelerate and every CI runner is macOS 14, while
-    // this was authored on macOS 26 where the same input returns a state-1
-    // error object normally. Rejecting the input before the factorization is
-    // what makes the case testable *and* portable: the assertion below now
-    // holds on both macOS versions, because the call never reaches Accelerate.
+    // This test previously could not exist, and the block it replaces said so
+    // rather than asserting anything: the abort happens inside Accelerate, and
+    // every CI runner is macOS 14, while this was authored on macOS 26 where
+    // the same input returns a state-1 error object normally — so the case was
+    // observable only as a comment explaining why it went untested. Rejecting
+    // the input before the factorization is what makes it testable *and*
+    // portable: the assertion below now holds on both macOS versions, because
+    // the call never reaches Accelerate.
     //
     // `InvalidArgument` specifically, not `is_err()`: it pins that the
     // wrapper's own guard fired, rather than an error that arrived from

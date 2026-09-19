@@ -575,11 +575,13 @@ pub(crate) fn csr_to_csc(
         //
         // The kind matches what the residual check reports for a singular
         // matrix, so callers see one answer for "this system has no solution"
-        // regardless of how the singularity was detected. Intel PARDISO does
-        // not share this function and still reports an empty row as its own
-        // zero-pivot error at phase 22 — this guard closes a process abort, not
-        // a behavioural difference worth propagating to a path that already
-        // handles the input.
+        // regardless of how the singularity was detected. Intel PARDISO never
+        // reaches this function, so that path's handling of an empty row is
+        // unchanged — this closes an abort observed on Accelerate, and does not
+        // propagate the rejection to an Intel path where no abort was measured.
+        // (It would plausibly surface as a zero pivot at phase 22, but that is
+        // an inference from PARDISO's documented behaviour rather than a
+        // measurement, and this guard does not rest on it.)
         //
         // `upper_only` is unaffected by the reasoning above: an empty row of
         // the stored triangle leaves that row of the full symmetric matrix

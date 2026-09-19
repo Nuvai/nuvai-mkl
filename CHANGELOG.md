@@ -182,9 +182,12 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   `ErrorKind::InvalidArgument`. That is not an arbitrary symptom check: an empty
   row is a zero row, so the matrix is singular and no backend has a solution to
   return — the same answer the residual check already gives for a singular
-  matrix. Intel PARDISO does not share this function and still reports the row
-  as its own zero-pivot error at phase 22, which it handles; this closes a
-  process abort, not a behaviour worth propagating to a path that already copes.
+  matrix. Intel PARDISO never reaches this function, so that path's handling of
+  an empty row is unchanged: this closes an abort *observed* on Accelerate, and
+  deliberately does not propagate the rejection to an Intel path where no abort
+  was measured (it would plausibly surface as a zero pivot at phase 22, but that
+  is an inference from PARDISO's documented behaviour, not a measurement, and
+  the guard does not rest on it).
   The guard covers the DSS Cholesky path as well, since it shares the
   transposition and an empty row of the stored upper triangle likewise leaves
   that row of the full symmetric matrix zero. The test this replaces existed

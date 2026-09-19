@@ -1195,6 +1195,53 @@ fn pardiso_rejects_bad_csr_indices_on_aarch64() {
     assert!(solver.solve(&ia, &ja, &a, &b).is_err());
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn pardiso_rejects_csr_row_count_mismatch_on_aarch64() {
+    // `row_index[n]` must equal `nnz + base`. That comparison is now widened to
+    // `i64` (it read `nnz as i32 + base`, which truncates above `i32::MAX`), so
+    // this pins that widening it changed no verdict for values that fit: the
+    // mismatch is still rejected, and the well-formed CSR below still solves.
+    //
+    // The case the widening actually fixes — `nnz` above `i32::MAX` — is not
+    // reachable from a test: it needs a `&[i32]` of more than 2^31 elements,
+    // 8 GiB no test can allocate. Same reason `conv::len_to_c_int` keeps its
+    // rule in one unit-tested function instead of at each call site.
+    use nuvai_mkl::error::ErrorKind;
+    let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+
+    // `ia = [1, 1, 2]` with `nnz = 2` implies one stored entry, not two. The
+    // first two entries agree with the 1-based base, so the mismatch check is
+    // what rejects this.
+    let err = solver
+        .solve(&[1i32, 1, 2], &[1i32, 1], &[1.0f64, 1.0], &[1.0f64, 1.0])
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+
+    // The well-formed path still solves — the widened check rejects nothing valid.
+    let ia = [1i32, 3, 6, 8];
+    let ja = [1i32, 2, 1, 2, 3, 2, 3];
+    let a = [2.0f64, 1.0, 1.0, 3.0, 1.0, 1.0, 2.0];
+    let x = solver.solve(&ia, &ja, &a, &[4.0f64, 10.0, 8.0]).unwrap();
+    assert_close64(&x, &[1.0, 2.0, 3.0], 1e-9);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn dss_rejects_csr_row_count_mismatch_on_aarch64() {
+    // The same widened comparison, with the 0-based base DSS passes — so this
+    // covers the `i64::from(base)` term at its other value. `row_index[n]` must
+    // equal `nnz`, and here it does not (2 against 1).
+    use nuvai_mkl::error::ErrorKind;
+    let row_index = [0i32, 1, 2];
+    let columns = [0i32];
+    let values = [1.0f64];
+    let err = dss::Dss::factor_symmetric(&row_index, &columns, &values)
+        .err()
+        .unwrap();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+}
+
 /// On `aarch64-unknown-linux-gnu` OpenBLAS covers only BLAS/LAPACK, so every
 /// other domain must return `ErrorKind::Unsupported` — never a silent no-op or
 /// a panic (ADR-0003, decision 2).

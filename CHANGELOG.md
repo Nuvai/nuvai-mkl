@@ -122,17 +122,24 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   straight to disk, so the checksum check then reported `checksum mismatch …
   Delete <path> and retry`. That sent the reader to clear a cache that was never
   the problem, discarded the HTTP status, and said nothing about what had
-  actually been received. Downloads now stream into `<dest>.part` and are renamed
-  into place only once the body is complete, so a refused transfer cannot pass
-  for a cached success — which is how the failure reached the verifier at all,
-  since the extractor skips the download whenever `dest` exists. The whole
-  attempt, **digest included**, is retried with backoff: the digest is the only
-  check that recognises the second shape of refusal, so retrying the transfer
-  alone would accept the garbage. A failure now names the received length, which
-  is what separates a short body from other content altogether, and an archive
-  that fails its digest is deleted rather than left behind — also how one bad
-  download used to outlive its cause on the Windows job, whose `actions/cache`
-  entry re-saves that directory when the job ends.
+  actually been received. Downloads now stage into a per-process `.part` file,
+  are checked against the pinned digest **before** being installed at their final
+  name, and the whole attempt — digest included — is retried with backoff: the
+  digest is the only check that recognises the second shape of refusal, so
+  retrying the transfer alone would accept the garbage. A failure names the
+  received length, which is what separates a short body from other content
+  altogether.
+
+  The staging file is per-process because `nuvai-mkl-src` is both a dependency
+  and a build-dependency of the crates above it: Cargo builds it as two units and
+  runs **two** build scripts against this one cache directory, so on CI both
+  fetch the same archives at the same time. A shared staging name lets them
+  truncate each other mid-download, and removing the final archive after a failed
+  attempt lets a unit whose fetch was refused delete the archive the other one
+  had just verified — which surfaced as `open .conda: NotFound` during
+  extraction, from a process that had itself downloaded successfully. Nothing on
+  this path deletes an archive any more; a rejected attempt leaves only its own
+  staging file, which it cleans up.
 
 - Enabling both backend features on Apple Silicon is a compile error instead of
   a silent choice (issue #35). `--features accelerate,openblas` resolved to

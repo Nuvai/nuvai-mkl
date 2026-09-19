@@ -253,13 +253,13 @@ fn fetch_and_extract_conda(file: &str, sha256: &str, pkg_dir: &Path) -> PathBuf 
     let url = format!("{}/{}/{}", conda_base(), conda_subdir(), file);
     let dest = pkg_dir.join(file);
     if dest.exists() {
-        // Verify a cached archive too — a corrupted or tampered cache file must
-        // fail loudly rather than reach the linker path. Unlike a fresh
-        // download this is not retried: re-reading the same bytes cannot change
-        // the answer, so the cache entry is dropped and the build re-run instead.
+        // Check a cached archive too — a corrupted or tampered cache file must
+        // fail loudly rather than reach the linker path. It is *not* replaced
+        // here: re-reading the same bytes cannot change the answer, and deleting
+        // it would race the second build script that shares this directory (see
+        // `staging_path`). Fail loudly and let the re-run clear it.
         if let Err(e) = verify_sha256(&dest, sha256, file) {
-            let _ = fs::remove_file(&dest);
-            panic!("{e}. Removed {}; re-run to download it again.", dest.display());
+            panic!("{e}. Delete {} and re-run.", dest.display());
         }
     } else {
         download_verified(&url, &dest, sha256, file);
@@ -324,8 +324,8 @@ fn cache_dir() -> PathBuf {
     dir
 }
 
-/// Download `url` to `dest` and check it against `sha256`, retrying the whole
-/// attempt before giving up.
+/// Download `url` and install it at `dest`, retrying the whole attempt before
+/// giving up.
 ///
 /// The retry has to cover the digest, not just the transfer. The CDN in front of
 /// conda-forge answers a request it will not serve with *either* an empty body
@@ -345,30 +345,74 @@ fn download_verified(url: &str, dest: &Path, sha256: &str, file: &str) {
             );
             std::thread::sleep(pause);
         }
-        match download_once(url, dest).and_then(|()| verify_sha256(dest, sha256, file)) {
+        match fetch_verified(url, dest, sha256, file) {
             Ok(()) => return,
-            Err(e) => {
-                // Never leave a rejected archive behind: `fetch_and_extract_conda`
-                // reads the *existence* of `dest` as a cached success, and on
-                // Windows CI this directory is what `actions/cache` re-saves when
-                // the job ends — so one bad download would otherwise outlive the
-                // incident that caused it.
-                let _ = fs::remove_file(dest);
-                last = e;
-            }
+            Err(e) => last = e,
         }
     }
     panic!("failed to download {url} after {DOWNLOAD_ATTEMPTS} attempts: {last}");
 }
 
-/// One download attempt, streamed into `<dest>.part` and renamed into place
-/// only once the body is complete.
+/// Where one attempt stages its bytes before they are known to be good.
 ///
-/// Writing straight to `dest` is what let a refused transfer pass for a cached
-/// success: [`fetch_and_extract_conda`] skips the download when `dest` exists,
-/// so an empty or truncated file survived to the verifier and was then reported
-/// as a checksum mismatch it did not cause (#19).
-fn download_once(url: &str, dest: &Path) -> Result<(), String> {
+/// The name is per-process, and `dest` is only ever written by a rename of a
+/// file that already hashed correctly — so a *rejected* attempt leaves nothing
+/// behind but its own staging file.
+///
+/// That matters because `nuvai-mkl-src` is both a dependency and a
+/// build-dependency of the crates above it: Cargo builds it as two units and
+/// runs **two** build scripts, aimed at this one cache directory. On CI both
+/// download the same archives at the same time. Sharing a staging name would let
+/// them truncate each other mid-download, and removing `dest` on a failed
+/// attempt — which an earlier revision of this code did — lets a unit whose
+/// fetch was refused delete the archive the other one had just verified, taking
+/// it down with `NotFound` somewhere later. Both run on the same machine with no
+/// coordination beyond these filenames, so neither may touch the other's work.
+fn staging_path(dest: &Path) -> PathBuf {
+    dest.with_extension(format!("{}.part", std::process::id()))
+}
+
+/// One attempt: stage the bytes, check them, then install them at `dest`.
+fn fetch_verified(url: &str, dest: &Path, sha256: &str, file: &str) -> Result<(), String> {
+    let tmp = staging_path(dest);
+    let _ = fs::remove_file(&tmp); // leftovers from a build that was interrupted
+    let outcome = download_to(url, &tmp).and_then(|()| verify_sha256(&tmp, sha256, file));
+    if let Err(e) = outcome {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    install(&tmp, dest, sha256, file)
+}
+
+/// Move a verified staging file into place, without disturbing a good archive
+/// another build script may have installed first.
+///
+/// Both copies are checked against the same pinned digest, so there is nothing
+/// to choose between them and no reason to overwrite one with the other.
+fn install(tmp: &Path, dest: &Path, sha256: &str, file: &str) -> Result<(), String> {
+    if dest.exists() && verify_sha256(dest, sha256, file).is_ok() {
+        let _ = fs::remove_file(tmp);
+        return Ok(());
+    }
+    match fs::rename(tmp, dest) {
+        Ok(()) => Ok(()),
+        // Windows refuses to rename onto an existing file, so a failure here
+        // usually means the other build script won the race. Re-check before
+        // treating it as an error.
+        Err(e) => {
+            let installed = verify_sha256(dest, sha256, file).is_ok();
+            let _ = fs::remove_file(tmp);
+            if installed {
+                Ok(())
+            } else {
+                Err(format!("install {}: {e}", dest.display()))
+            }
+        }
+    }
+}
+
+/// One transfer, staged at `path`. Never removes `path`; the caller owns it.
+fn download_to(url: &str, path: &Path) -> Result<(), String> {
     eprintln!("[nuvai-mkl-src] downloading {url}");
     let resp = ureq::get(url).call().map_err(|e| format!("{e}"))?;
     let status = resp.status();
@@ -376,21 +420,18 @@ fn download_once(url: &str, dest: &Path) -> Result<(), String> {
         .header("Content-Length")
         .and_then(|v| v.trim().parse::<u64>().ok());
 
-    let tmp = dest.with_extension("part");
-    if let Some(parent) = dest.parent() {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    let mut file =
-        fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
+    let mut file = fs::File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
     let written = io::copy(&mut resp.into_reader(), &mut file)
         .map_err(|e| format!("read {url} body: {e}"))?;
     drop(file);
 
-    if let Some(reason) = unusable_body(written, declared) {
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("HTTP {status} from {url}: {reason}"));
+    match unusable_body(written, declared) {
+        Some(reason) => Err(format!("HTTP {status} from {url}: {reason}")),
+        None => Ok(()),
     }
-    fs::rename(&tmp, dest).map_err(|e| format!("rename into {}: {e}", dest.display()))
 }
 
 /// Why a downloaded body cannot be used, or `None` when it can.

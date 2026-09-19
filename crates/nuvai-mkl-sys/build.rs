@@ -1,5 +1,5 @@
 //! Generates raw FFI bindings from the oneMKL headers that `nuvai-mkl-src`
-//! has acquired (and cached), via `nuvai_mkl_src::locate()`.
+//! has acquired (and cached), via `nuvai_mkl_src::MklInfo::from_build_metadata()`.
 //!
 //! On the aarch64 targets where Intel ships no oneMKL, the bindgen pass is
 //! skipped entirely and the crate compiles a hand-written FFI surface instead:
@@ -16,14 +16,13 @@
 //! target being built, which Cargo exposes as `CARGO_CFG_TARGET_*`. Dispatch on
 //! those so cross-compiling `--target aarch64-unknown-linux-gnu` from an
 //! x86_64 host selects the hand-written OpenBLAS surface instead of running the
-//! Intel bindgen path (`nuvai_mkl_src::locate()` is unavailable on an aarch64
-//! host and would also acquire the wrong-architecture headers).
+//! Intel bindgen path (which would also bind the wrong-architecture headers).
 //!
 //! # docs.rs
 //!
 //! The docs.rs build has no network and no MKL. docs.rs sets the `DOCS_RS`
-//! environment variable, so this script returns before `nuvai_mkl_src::locate()`
-//! / bindgen on every target — mirroring the guard in `nuvai-mkl-src/build.rs`.
+//! environment variable, so this script returns before bindgen on every target —
+//! mirroring the guard in `nuvai-mkl-src/build.rs`.
 
 #![allow(unused_imports)] // `PathBuf` is used only on Intel host builds
 
@@ -38,7 +37,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/linux_aarch64.rs");
     println!("cargo:rerun-if-changed=src/netlib_abi.rs");
 
-    // docs.rs has no network and no MKL; skip locate()/bindgen there.
+    // docs.rs has no network and no MKL; skip bindgen there.
     if std::env::var("DOCS_RS").is_ok() {
         return;
     }
@@ -51,8 +50,9 @@ fn main() {
         // No Intel oneMKL on any aarch64 target: the FFI surface is hand-written
         // (src/aarch64.rs on macOS, src/linux_aarch64.rs on Linux). Surface the
         // selected backend as a diagnostic; `cargo:metadata` is not emitted here
-        // because this crate declares no `links` key, so Cargo would drop it —
-        // the backend already propagates via `nuvai-mkl-src` (`DEP_MKL_BACKEND`).
+        // because this crate declares no `links` key, so Cargo would drop it.
+        // The backend reaches the final link through `nuvai-mkl-src`, which is
+        // the sole `links = "mkl"` provider (ADR-0003, decision 1).
         ("macos", "aarch64") | ("linux", "aarch64") => {
             let backend =
                 nuvai_mkl_src::backend_for_target(&target_os, &target_arch, target_env.as_deref())
@@ -69,7 +69,24 @@ fn main() {
         ("linux", "x86_64") | ("windows", "x86_64") => {
             #[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
             {
-                let info = nuvai_mkl_src::locate();
+                // The paths its build script acquired and published, not a
+                // second acquisition of our own (#24) — `locate()` is no longer
+                // in the library target, so this is the only way to reach them.
+                let info = nuvai_mkl_src::MklInfo::from_build_metadata().expect(
+                    "nuvai-mkl-src published no DEP_MKL_* metadata — it must stay in this \
+                     crate's [build-dependencies] for Cargo to forward it",
+                );
+                // The published paths are a snapshot that nothing re-derives
+                // when `~/.cache/nuvai-mkl` is cleared, so check rather than let
+                // bindgen report the missing header as a parse failure.
+                if !info.include_dir.is_dir() {
+                    panic!(
+                        "the MKL include directory nuvai-mkl-src published, {}, no longer \
+                         exists. If the MKL cache was cleared, force acquisition to re-run \
+                         with `cargo clean -p nuvai-mkl-src` and rebuild.",
+                        info.include_dir.display()
+                    );
+                }
                 eprintln!(
                     "[nuvai-mkl-sys] binding oneMKL {} from {}",
                     nuvai_mkl_src::MKL_VERSION,

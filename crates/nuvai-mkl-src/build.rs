@@ -14,12 +14,16 @@
 //! cross-compiling `--target aarch64-unknown-linux-gnu` from an x86_64 host
 //! would select `IntelMkl` and emit x86_64 MKL directives for an ARM target.
 
+// `mkl_info.rs` first: `acquire.rs` relies on the `env`/`Path`/`PathBuf`
+// imports it declares, since both share this script's module.
+include!("src/mkl_info.rs");
 include!("src/acquire.rs");
 include!("src/backend.rs");
 
 fn main() {
     println!("cargo:rerun-if-env-changed=MKLROOT");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/mkl_info.rs");
     println!("cargo:rerun-if-changed=src/acquire.rs");
     println!("cargo:rerun-if-changed=src/backend.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENBLAS");
@@ -43,11 +47,11 @@ fn main() {
         Backend::IntelMkl => emit_intel_mkl(&target_os),
         Backend::Accelerate => {
             println!("cargo:rustc-link-lib=framework=Accelerate");
-            println!("cargo:metadata=BACKEND=accelerate");
+            println!("cargo::metadata=BACKEND=accelerate");
         }
         Backend::OpenBlas => {
             println!("cargo:rustc-link-lib=dylib=openblas");
-            println!("cargo:metadata=BACKEND=openblas");
+            println!("cargo::metadata=BACKEND=openblas");
             // macOS: OpenBLAS replaces only BLAS/LAPACK (vecLib); FFT (vDSP),
             // VML (vForce) and the sparse solvers (Sparse/SparseSolve) still
             // call Accelerate, so both must be linked on this path.
@@ -120,12 +124,36 @@ fn emit_intel_mkl(target_os: &str) {
         _ => panic!("Intel oneMKL is only acquired for x86_64 Linux/Windows targets"),
     }
 
-    // Informational metadata, surfaced to downstream build scripts as
-    // `DEP_MKL_*` (this crate declares `links = "mkl"`).
-    println!("cargo:metadata=INCLUDE_DIR={}", info.include_dir.display());
-    println!("cargo:metadata=LIB_DIR={}", info.lib_dir.display());
-    for dll_dir in &info.dll_dirs {
-        println!("cargo:metadata=DLL_DIR={}", dll_dir.display());
+    // What the build scripts of `nuvai-mkl` and `nuvai-mkl-sys` read back
+    // through `MklInfo::from_build_metadata()` (#24), so the acquisition runs
+    // once here rather than once per dependent. This crate declares
+    // `links = "mkl"`, which is what makes Cargo forward them as `DEP_MKL_*`.
+    //
+    // The directive is `cargo::metadata=` — two colons. The single-colon form
+    // this used before is not a directive at all: Cargo read it as *legacy*
+    // metadata under the literal key `metadata`, so every line below was
+    // recorded as `DEP_MKL_METADATA="BACKEND=…"` and none of these variables
+    // existed. Nothing consumed them, which is why it went unnoticed.
+    //
+    // CI does not read `DLL_DIR_*` either, and should not: it prepends the
+    // directories to `PATH` for the test process, which a build script cannot do
+    // for anyone — hence the PowerShell step that globs the cache layout.
+    println!("cargo::metadata=INCLUDE_DIR={}", info.include_dir.display());
+    println!("cargo::metadata=LIB_DIR={}", info.lib_dir.display());
+    if let Some(omp) = &info.omp_lib_dir {
+        println!("cargo::metadata=OMP_LIB_DIR={}", omp.display());
     }
-    println!("cargo:metadata=VERSION={}", MKL_VERSION);
+    // Indexed, not repeated: Cargo keeps only the *last* value for a repeated
+    // metadata key, so the loop this replaces published exactly one directory —
+    // whichever happened to be extracted last.
+    //
+    // The count is published alongside the indices and required by the reader.
+    // Indices alone cannot distinguish "n directories" from "the first k of n",
+    // and a list that is silently short is a missing `PATH` entry, which fails
+    // as a DLL that will not load at run time rather than as a build error.
+    println!("cargo::metadata=DLL_DIR_COUNT={}", info.dll_dirs.len());
+    for (i, dll_dir) in info.dll_dirs.iter().enumerate() {
+        println!("cargo::metadata=DLL_DIR_{i}={}", dll_dir.display());
+    }
+    println!("cargo::metadata=VERSION={}", MKL_VERSION);
 }

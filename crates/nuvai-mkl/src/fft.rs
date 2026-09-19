@@ -711,3 +711,56 @@ impl Drop for FftPlan {
         }
     }
 }
+
+/// Unit tests for the vDSP length routing.
+///
+/// These live in-crate rather than in `tests/smoke.rs` because
+/// [`interleaved_supports`] is private, and because the *behaviour* it guards
+/// is invisible on macOS 26: the `fft_roundtrip_*` tests only catch #53 on
+/// macOS 14, so a unit test on the routing decision is the only gate that runs
+/// on a macOS 26 host.
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+mod tests {
+    use super::interleaved_supports;
+
+    /// #53: macOS 14's libvDSP mis-executes exactly length 8 in the
+    /// interleaved-complex family. `CreateSetup(8)` returns a valid setup — 8
+    /// is the family's documented minimum (`f = 2`, `n = 2`) — but `Execute`
+    /// then writes a corrupted spectrum *and* stores past the end of the output
+    /// buffer. Length 8 must therefore route to the split-complex family, which
+    /// is correct on that runtime.
+    #[test]
+    fn len_8_is_not_interleaved() {
+        assert!(
+            !interleaved_supports(8),
+            "length 8 must route to split-complex: macOS 14's interleaved vDSP \
+             mis-executes it and writes out of bounds (#53)"
+        );
+    }
+
+    /// The carve-out must be *only* length 8. On macOS 14 these lengths are
+    /// correct via the interleaved family and `vDSP_DFT_zop_*` rejects them, so
+    /// widening the exclusion would turn working lengths into `Unsupported` — a
+    /// regression, not a fix.
+    #[test]
+    fn interleaved_keeps_the_lengths_that_work() {
+        for len in [12usize, 16, 20, 24, 36, 60] {
+            assert!(
+                interleaved_supports(len),
+                "{len} must stay on the interleaved family"
+            );
+        }
+    }
+
+    /// Lengths below the family's minimum (`f·2^n` with `n >= 2`, i.e. 8) take
+    /// the split-complex fallback; the rest are rejected outright by `create`.
+    #[test]
+    fn below_the_interleaved_minimum() {
+        for len in [0usize, 1, 2, 3, 4, 5, 6, 7] {
+            assert!(
+                !interleaved_supports(len),
+                "{len} is below the interleaved minimum"
+            );
+        }
+    }
+}

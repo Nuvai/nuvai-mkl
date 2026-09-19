@@ -21,9 +21,11 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   `nuvai-mkl-sys` binds, and are keyed **per code space**: the libraries share no
   namespace and do not even agree on a sign — DFTI counts *up* from zero while
   VSL, PARDISO and Accelerate Sparse count *down* — so code `3` means three
-  unrelated things depending on who returned it. LAPACK's `info` is deliberately
-  not decoded: it is positional (the negated index of the offending argument, or
-  "`U(i,i)` was exactly zero") rather than a code-to-text map.
+  unrelated things depending on who returned it. LAPACK's `info` is decoded
+  too, by rule rather than table since it is positional: a negative value is
+  reported as the index of the argument that failed (`argument 4 had an illegal
+  value`), and a positive one as `U(i,i) is exactly zero` — the singular-factor
+  case, which for `?gesv` means no solution was computed.
 
 ### Changed
 

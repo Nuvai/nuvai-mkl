@@ -48,6 +48,9 @@ pub(crate) enum CodeSpace {
     Dss,
     /// Accelerate `SparseStatus_t`, returned by `_Sparse*` on Apple Silicon.
     Sparse,
+    /// LAPACK's `info` out-parameter, returned by `?gesv`/`?getrf` on both
+    /// backends. Unlike the others this is not a code table: see `describe`.
+    Lapack,
 }
 
 /// Error type for all `nuvai-mkl` operations.
@@ -64,25 +67,6 @@ pub struct Error {
 }
 
 impl Error {
-    /// Wrap an error code returned by an MKL routine, with no decode table.
-    ///
-    /// Used for codes this crate has no table for. That is currently the LAPACK
-    /// `info` out-parameter (#33 scoped the tables to the PARDISO/DFTI/DSS/VSL
-    /// status codes): `info` is positional rather than tabular — negative is the
-    /// negated index of the offending argument, positive means `U(i,i)` was
-    /// exactly zero — so decoding it needs the routine's argument list, not a
-    /// code-to-text map. Prefer the typed constructors ([`Error::dfti`],
-    /// [`Error::vsl`], [`Error::pardiso`], [`Error::dss`], [`Error::sparse`])
-    /// wherever the code space is known, so the code is decoded in `Display`.
-    pub(crate) fn mkl(code: i32, message: impl Into<String>) -> Self {
-        Self {
-            kind: ErrorKind::Mkl,
-            code,
-            space: None,
-            message: message.into(),
-        }
-    }
-
     /// An MKL error whose code is decodable in `space`.
     fn coded(space: CodeSpace, code: i32, message: impl Into<String>) -> Self {
         Self {
@@ -131,6 +115,15 @@ impl Error {
     )]
     pub(crate) fn sparse(code: i32, routine: impl Into<String>) -> Self {
         Self::coded(CodeSpace::Sparse, code, routine)
+    }
+
+    /// LAPACK's `info` out-parameter, from `lapack`'s four routines on either
+    /// backend (LAPACKE on Intel, the Fortran `_` shim elsewhere).
+    ///
+    /// Live on every target, unlike the constructors above: both backends of
+    /// these routines report through `info`.
+    pub(crate) fn lapack(info: i32, routine: impl Into<String>) -> Self {
+        Self::coded(CodeSpace::Lapack, info, routine)
     }
 
     /// An invalid argument detected on the safe-Rust side.
@@ -405,6 +398,27 @@ fn describe(space: CodeSpace, code: i32) -> Option<&'static str> {
             -4 => Some("invalid sparse parameter"),
             _ => None,
         },
+
+        // LAPACK's `info` is positional rather than tabular, so it gets a rule
+        // instead of a table — and the only rule the four wrapped routines
+        // share. `info < 0` is the negated 1-based index of the argument that
+        // failed its own check (so `-4` is the fourth argument, which is `lda`
+        // for `?gesv`); `info > 0` is the first `i` where `U(i,i)` came out
+        // exactly zero, meaning the factorization completed but is singular —
+        // which for `?gesv` also means no solution was computed. The argument
+        // index is the useful half of the negative case, and `&'static str`
+        // cannot carry it, so `Display` formats that one itself
+        // (see the `ErrorKind::Mkl` arm) and this returns the argument-free
+        // wording that `description()` hands out.
+        CodeSpace::Lapack => {
+            if code < 0 {
+                Some("an argument had an illegal value")
+            } else if code > 0 {
+                Some("U(i,i) is exactly zero; the factor is singular")
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -413,9 +427,21 @@ impl fmt::Display for Error {
         match self.kind {
             ErrorKind::Mkl => {
                 write!(f, "MKL error (code {}): {}", self.code, self.message)?;
-                // Append the decoded meaning when there is one (#33). The raw
-                // code stays in the message either way: it is what a bug report
-                // or a vendor's own documentation is keyed on.
+                // LAPACK's negative `info` carries the *index* of the argument
+                // that failed, which is the part worth reporting, so it is
+                // formatted here rather than through the argument-free wording
+                // `describe` returns. `unsigned_abs` because `-i32::MIN`
+                // overflows.
+                if self.space == Some(CodeSpace::Lapack) && self.code < 0 {
+                    return write!(
+                        f,
+                        " — argument {} had an illegal value",
+                        self.code.unsigned_abs()
+                    );
+                }
+                // Otherwise append the decoded meaning when there is one (#33).
+                // The raw code stays in the message either way: it is what a
+                // bug report or a vendor's own documentation is keyed on.
                 match self.description() {
                     Some(description) => write!(f, " — {description}"),
                     None => Ok(()),
@@ -466,8 +492,9 @@ mod tests {
     }
 
     /// The code space is stored per error, so a space's table cannot be
-    /// consulted for another's number: `-1` decodes in every space here, and
-    /// each answer must match its own space (`Error::mkl` has no space at all).
+    /// consulted for another's number: `1`, `-1` and `9` each appear in more
+    /// than one space, and every answer must match the space the error was
+    /// built with.
     #[test]
     fn does_not_borrow_another_spaces_table() {
         assert_eq!(
@@ -482,8 +509,56 @@ mod tests {
             Error::pardiso(-1, "x").description(),
             Some("input inconsistent")
         );
-        assert_eq!(Error::mkl(1, "x").description(), None);
-        assert_eq!(Error::mkl(-1, "x").description(), None);
+        assert_eq!(
+            Error::dss(-1, "x").description(),
+            Some("zero pivot encountered")
+        );
+        assert_eq!(
+            Error::vsl(-1, "x").description(),
+            Some("the requested feature is not implemented")
+        );
+        // LAPACK is the one space whose rule is two-sided: `-1` and `1` both
+        // mean something, and neither matches what they mean elsewhere.
+        assert_eq!(
+            Error::lapack(-1, "x").description(),
+            Some("an argument had an illegal value")
+        );
+        assert_eq!(
+            Error::lapack(1, "x").description(),
+            Some("U(i,i) is exactly zero; the factor is singular")
+        );
+    }
+
+    /// LAPACK's negative `info` is reported with the argument index, which
+    /// `description()` cannot carry (it returns `&'static str`) and so is
+    /// formatted by `Display` itself. `info = -4` from `?gesv` means its fourth
+    /// argument — `lda` — failed LAPACK's own check.
+    #[test]
+    fn lapack_info_reports_the_argument_index() {
+        let err = Error::lapack(-4, "LAPACKE_dgesv");
+        assert_eq!(err.description(), Some("an argument had an illegal value"));
+        assert_eq!(
+            err.to_string(),
+            "MKL error (code -4): LAPACKE_dgesv — argument 4 had an illegal value"
+        );
+
+        // Positive `info` is a singular factor and needs no index.
+        assert_eq!(
+            Error::lapack(2, "sgesv_").to_string(),
+            "MKL error (code 2): sgesv_ — U(i,i) is exactly zero; the factor is singular"
+        );
+
+        // `0` is never constructed — the call sites test the status before
+        // wrapping it — and documents no meaning here.
+        assert_eq!(Error::lapack(0, "x").description(), None);
+        assert_eq!(Error::lapack(0, "x").to_string(), "MKL error (code 0): x");
+
+        // A naive `-info` would overflow at `i32::MIN`; `unsigned_abs` does not.
+        assert!(
+            Error::lapack(i32::MIN, "x")
+                .to_string()
+                .contains("argument 2147483648")
+        );
     }
 
     /// A code with no entry anywhere renders exactly as it did before the table

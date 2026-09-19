@@ -211,7 +211,7 @@ pub fn sgesv(
             )
         };
         if info != 0 {
-            return Err(Error::mkl(info, "LAPACKE_sgesv"));
+            return Err(Error::lapack(info, "LAPACKE_sgesv"));
         }
         Ok(())
     }
@@ -258,7 +258,7 @@ pub fn dgesv(
             )
         };
         if info != 0 {
-            return Err(Error::mkl(info, "LAPACKE_dgesv"));
+            return Err(Error::lapack(info, "LAPACKE_dgesv"));
         }
         Ok(())
     }
@@ -307,7 +307,7 @@ pub fn sgetrf(
             )
         };
         if info != 0 {
-            return Err(Error::mkl(info, "LAPACKE_sgetrf"));
+            return Err(Error::lapack(info, "LAPACKE_sgetrf"));
         }
         Ok(())
     }
@@ -355,7 +355,7 @@ pub fn dgetrf(
             )
         };
         if info != 0 {
-            return Err(Error::mkl(info, "LAPACKE_dgetrf"));
+            return Err(Error::lapack(info, "LAPACKE_dgetrf"));
         }
         Ok(())
     }
@@ -491,7 +491,7 @@ mod aarch64 {
             }
         };
         if info != 0 {
-            return Err(Error::mkl(info, "sgesv_"));
+            return Err(Error::lapack(info, "sgesv_"));
         }
         Ok(())
     }
@@ -567,7 +567,7 @@ mod aarch64 {
             }
         };
         if info != 0 {
-            return Err(Error::mkl(info, "dgesv_"));
+            return Err(Error::lapack(info, "dgesv_"));
         }
         Ok(())
     }
@@ -632,7 +632,7 @@ mod aarch64 {
             }
         };
         if info != 0 {
-            return Err(Error::mkl(info, "sgetrf_"));
+            return Err(Error::lapack(info, "sgetrf_"));
         }
         Ok(())
     }
@@ -695,7 +695,7 @@ mod aarch64 {
             }
         };
         if info != 0 {
-            return Err(Error::mkl(info, "dgetrf_"));
+            return Err(Error::lapack(info, "dgetrf_"));
         }
         Ok(())
     }

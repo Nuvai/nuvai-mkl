@@ -16,8 +16,9 @@ default = ["accelerate"]
 # Link backend on Apple Silicon. "accelerate" is the default; "openblas"
 # opts into OpenBLAS instead. On Intel targets these features are inert
 # (the backend is always oneMKL), but selecting one still enables aarch64
-# builds to compile. At most one should be enabled; if both are, the
-# selection is made explicitly via `nuvai_mkl_src::backend()`.
+# builds to compile. On aarch64-apple-darwin exactly one must be enabled:
+# "neither" and "both" are compile errors (#35) — "both" used to resolve
+# silently to OpenBLAS, which is the silent selection ADR-0003 forbids.
 accelerate = ["nuvai-mkl-src/accelerate"]
 openblas = ["nuvai-mkl-src/openblas"]
 

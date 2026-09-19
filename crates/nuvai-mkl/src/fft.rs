@@ -38,10 +38,10 @@ struct FftHandle {
 /// The vDSP DFT family backing an aarch64 [`FftHandle`]. Interleaved-complex is
 /// preferred — it transforms the caller's `MKL_Complex*` buffer directly (no
 /// split/reinterleave copy) — but it can only plan lengths `f·2^n` for
-/// `f ∈ {2, 3, 5, 9, 15, 25}` with `n >= 2` (minimum 8) on macOS 12.0+. The
-/// split-complex family is the fallback for the two lengths below that (2 and
-/// 4), which need a deinterleave → execute → reinterleave round-trip through
-/// scratch arrays.
+/// `f ∈ {2, 3, 5, 9, 15, 25}` with `n >= 2` (minimum 8) on macOS 12.0+, and its
+/// length 8 is unusable on macOS 14 (see [`interleaved_supports`], #53). The
+/// split-complex family is the fallback for lengths 2, 4 and 8, which need a
+/// deinterleave → execute → reinterleave round-trip through scratch arrays.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 enum FftBackend {
     /// Interleaved-complex DFT (`vDSP_DFT_Interleaved_*`, macOS 12.0+).
@@ -104,12 +104,14 @@ impl FftPlan {
         {
             let length = len as nuvai_mkl_sys::vDSP_Length;
             // Select the family deterministically from vDSP's documented length
-            // rules (vDSP_DFT.h) instead of treating a null setup as
+            // rules (vDSP.h) instead of treating a null setup as
             // "unsupported": a null can also mean out-of-memory, which must not
             // be misread as Unsupported nor silently downgraded to the slower
             // split family. The interleaved family plans `f·2^n` for
-            // `f ∈ {2, 3, 5, 9, 15, 25}` with `n >= 2` (minimum 8); only
-            // lengths 2 and 4 fall back to the split family.
+            // `f ∈ {2, 3, 5, 9, 15, 25}` with `n >= 2` (minimum 8); lengths 2, 4
+            // and 8 fall back to the split family. Length 8 is not below that
+            // minimum — it is carved out because macOS 14's vDSP mis-executes it
+            // (see `interleaved_supports`, #53).
             let backend = if interleaved_supports(len) {
                 Self::create_interleaved(length, single).ok_or_else(|| {
                     Error::unsupported(format!(
@@ -117,7 +119,7 @@ impl FftPlan {
                          but the setup could not be created (out of memory?)"
                     ))
                 })?
-            } else if len == 2 || len == 4 {
+            } else if matches!(len, 2 | 4 | 8) {
                 Self::create_split(length, single).ok_or_else(|| {
                     Error::unsupported(format!(
                         "FFT length {len} is supported by vDSP's split DFT \
@@ -127,7 +129,7 @@ impl FftPlan {
             } else {
                 return Err(Error::unsupported(format!(
                     "FFT length {len} is not supported by vDSP (supported: 2, 4, \
-                     and f·2^n for f in {{2, 3, 5, 9, 15, 25}} with n >= 2)"
+                     8, and f·2^n for f in {{2, 3, 5, 9, 15, 25}} with n >= 2)"
                 )));
             };
             Ok(Self {
@@ -363,21 +365,42 @@ impl FftPlan {
 ///
 /// The plan prefers vDSP's interleaved-complex DFT (macOS 12.0+), which
 /// transforms the caller's `MKL_Complex*` buffer directly (layout-identical to
-/// `DSP*Complex`) with no split/reinterleave copy. For the two lengths that
-/// family cannot plan (2 and 4) it falls back to the split-complex DFT, which
+/// `DSP*Complex`) with no split/reinterleave copy. For the lengths that family
+/// cannot be used for — 2 and 4, below its minimum, and 8, which macOS 14's
+/// vDSP mis-executes (#53) — it falls back to the split-complex DFT, which
 /// deinterleaves into `re`/`im` scratch arrays, runs
 /// [`nuvai_mkl_sys::vDSP_DFT_Execute`], and re-interleaves. Both families'
 /// inverse DFTs are unnormalized, so the `1/n` backward scale is applied
 /// explicitly to match the DFTI contract on Intel.
 ///
 /// Whether `len` is planable by vDSP's interleaved-complex DFT: `len = f·2^n`
-/// for `f ∈ {2, 3, 5, 9, 15, 25}` and `n >= 2` (vDSP_DFT.h). Used to select the
+/// for `f ∈ {2, 3, 5, 9, 15, 25}` and `n >= 2` (vDSP.h). Used to select the
 /// family deterministically so a null setup on a supported length is reported as
 /// a setup failure (out of memory) rather than misread as an unsupported length.
+///
+/// Length 8 is a deliberate exception: it satisfies that rule but is unusable on
+/// macOS 14 — see the carve-out below.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn interleaved_supports(len: usize) -> bool {
     // Minimum interleaved length is f_min · 2^2 = 2 · 4 = 8.
     if len < 8 {
+        return false;
+    }
+    // #53: macOS 14's libvDSP mis-executes exactly length 8. It is the family's
+    // documented minimum (`f = 2`, `n = 2`) and `CreateSetup(8)` returns a valid
+    // non-null setup, but `Execute` then produces a corrupted spectrum *and*
+    // stores past the end of the output buffer — an out-of-bounds write
+    // reachable from safe Rust. Measured on macOS 14.8.9 (build 23J631): across
+    // a 15-length sweep against an analytic DFT, 8 is the only wrong length, and
+    // canary buffers show the store landing beyond `output`.
+    //
+    // This is a workaround for the older runtime, not a property of the length —
+    // macOS 26 computes 8 correctly — so route it to the split-complex family
+    // (verified correct there) in `create` rather than deleting this later.
+    // Deliberately *only* 8: 12/20/36/60 are correct on macOS 14 and
+    // `vDSP_DFT_zop_*` rejects them, so a wider exclusion would turn working
+    // lengths into `Unsupported`.
+    if len == 8 {
         return false;
     }
     // `len = f · 2^n` with `n >= 2` iff `len / f` is a power of two `>= 4`.
@@ -464,7 +487,7 @@ impl FftPlan {
         Some(FftBackend::Interleaved { forward, inverse })
     }
 
-    /// Plan the split-complex family (fallback for lengths 2 and 4). Returns
+    /// Plan the split-complex family (fallback for lengths 2, 4 and 8). Returns
     /// `None` when the length is unsupported.
     fn create_split(length: nuvai_mkl_sys::vDSP_Length, single: bool) -> Option<FftBackend> {
         // SAFETY: `CreateSetup`/`CreateSetupD` take a null `prev` setup and the

@@ -16,6 +16,13 @@
 //! backend (`mkl_rt` on Intel, `-framework Accelerate`/`-lopenblas` on Apple
 //! Silicon, `-lopenblas` on Linux aarch64).
 //!
+//! The acquisition above happens in the **build script**, not in this library:
+//! it needs `ureq`/`zip`/`zstd`/`tar`/`sha2`, which are build-dependencies so
+//! that they stay out of the runtime graph of every downstream build (#24). A
+//! dependent build script reads the resolved paths back through
+//! [`MklInfo::from_build_metadata`] rather than acquiring a second time, so the
+//! expensive path — a conda-forge download — runs once per build graph.
+//!
 //! ## Platform support
 //!
 //! | Target | Backend |
@@ -26,5 +33,10 @@
 //! | `aarch64-apple-darwin` (Apple Silicon) | Accelerate (default) or OpenBLAS |
 //! | `aarch64-unknown-linux-gnu` | OpenBLAS (BLAS/LAPACK only; FFT/VML/VSL/sparse unsupported) |
 
-include!("acquire.rs");
+// `acquire.rs` is deliberately absent: it needs the acquisition crates, and
+// this is the target those must not reach (#24). The acquisition itself runs in
+// `build.rs`, which includes both files; what the library exposes here is the
+// version, the `MklInfo` shape, and the reader that rebuilds one from the
+// metadata that build script published.
+include!("mkl_info.rs");
 include!("backend.rs");

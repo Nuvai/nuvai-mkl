@@ -497,6 +497,11 @@ impl Pardiso {
 /// This is the single validated CSR→CSC transposition shared by the PARDISO
 /// (nonsymmetric, 1-based) and DSS (symmetric, 0-based) aarch64 backends, so
 /// bounds/monotonicity checks apply to both.
+///
+/// Callers supply the CSR contract rather than this function re-deriving it:
+/// `row_index` has `n + 1` entries and `values` is parallel to `columns`. Both
+/// are asserted in debug builds, since the alternative is an index panic from
+/// inside the transposition loop.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn csr_to_csc(
     n: usize,
@@ -507,6 +512,12 @@ pub(crate) fn csr_to_csc(
     upper_only: bool,
 ) -> Result<(Vec<i64>, Vec<i32>, Vec<f64>)> {
     let nnz = columns.len();
+    debug_assert_eq!(
+        row_index.len(),
+        n + 1,
+        "CSR row_index must have n + 1 entries"
+    );
+    debug_assert_eq!(values.len(), nnz, "CSR values must be parallel to columns");
 
     // A valid `base`-based CSR has row_index[0] == base, row_index[n] == nnz +
     // base, and a non-decreasing row_index. Any other shape would silently drop
@@ -516,7 +527,15 @@ pub(crate) fn csr_to_csc(
             "CSR row_index[0] does not match the index base",
         ));
     }
-    if row_index[n] != nnz as i32 + base {
+    // Compared in `i64` instead of narrowing to `row_index[n]`'s `i32`. The
+    // narrowing was #25's class: `nnz as i32` truncates above `i32::MAX`, which
+    // would let an invalid CSR pass this check and then index `row_indices` out
+    // of bounds below, and `nnz + base` overflows `i32` at `nnz == i32::MAX`
+    // (a panic under `overflow-checks`). Nothing is guarded instead, because
+    // `nnz` is not a length handed to C as 32 bits — the CSC arrays reach
+    // Accelerate through an `int64_t` `columnStarts` — so the fix is to drop the
+    // narrowing rather than bound it.
+    if i64::from(row_index[n]) != nnz as i64 + i64::from(base) {
         return Err(Error::invalid("CSR row_index[n] does not match nnz"));
     }
     for w in row_index.windows(2) {
@@ -534,6 +553,10 @@ pub(crate) fn csr_to_csc(
     }
     let mut col_starts = vec![0i64; n + 1];
     for j in 0..n {
+        // `col_count[j] <= nnz`, and a slice of more than `i64::MAX` elements
+        // cannot be allocated, so this widening is lossless — the reason the
+        // `usize` count is left as `usize` here rather than narrowed as `nnz`
+        // used to be above.
         col_starts[j + 1] = col_starts[j] + col_count[j] as i64;
     }
     let mut next = col_starts[..n].to_vec();

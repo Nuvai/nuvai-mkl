@@ -11,17 +11,23 @@
 
 use std::os::raw::c_int;
 
+use crate::conv::len_to_c_int;
 use crate::error::{Error, Result};
 
 /// Validate `src`/`dst` lengths and return the vector length as `c_int`.
+// On `aarch64-unknown-linux-gnu` this is unreachable: every generated function
+// below returns `Unsupported` before it looks at its arguments, so nothing
+// calls `check` there. On the other targets the fast paths do.
+#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
 #[inline]
 fn check(src: usize, dst: usize, name: &str) -> Result<c_int> {
     if src != dst {
         return Err(Error::invalid(format!("{name}: src/dst length mismatch")));
     }
     // The C routine takes the length as `int`; a vector longer than `i32::MAX`
-    // would truncate and silently process only a prefix. Reject it up front.
-    c_int::try_from(src).map_err(|_| Error::invalid(format!("{name}: length exceeds i32::MAX")))
+    // would truncate and silently process only a prefix. `len_to_c_int` rejects
+    // it up front, sharing that rule with the VSL/PARDISO/DSS call sites.
+    len_to_c_int(src, name)
 }
 
 /// Generate one unary VML function.

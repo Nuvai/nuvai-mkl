@@ -8,20 +8,11 @@
 //! way the bindings are low-level and `unsafe`; prefer the safe [`nuvai_mkl`]
 //! wrapper for day-to-day use.
 
-#![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(dead_code)]
-#![allow(improper_ctypes)]
-#![allow(clippy::all)]
-#![allow(clippy::too_many_arguments)]
-#![allow(unused_imports)]
-#![allow(deref_nullptr)]
-// bindgen pulls malloc/realloc prototypes from transitively-included stdlib
-// headers (and the aarch64 module declares `malloc`/`free` to back the default
-// sparse options); they are never called directly, but the "suspicious runtime
-// symbol" lint fires.
-#![allow(suspicious_runtime_symbol_definitions)]
+// The crate root used to carry the lint suppressions for the whole crate
+// (#36). They now live on the code that needs them: the three naming lints on
+// each hand-written surface, and the generated-code set on `mod bindings`
+// below. Nothing is suppressed crate-wide any more, so a warning in *new* code
+// — hand-written or generated — is visible instead of silently covered.
 
 pub use nuvai_mkl_src::MKL_VERSION;
 
@@ -41,4 +32,46 @@ pub use linux_aarch64::*;
 // bindgen output only exists on Intel targets; both aarch64 fallbacks use a
 // hand-written FFI surface, so this must not fire on either.
 #[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+mod bindings {
+    // Suppressions scoped to the generated code, which is the only place they
+    // are justified (#36):
+    //
+    // * the naming lints, because generated declarations reproduce the C
+    //   identifiers verbatim, and oneMKL's headers are full of names no Rust
+    //   casing rule accepts — `MKL_INT`, `DFTI_CONFIG_PARAM`,
+    //   `DFTI_DESCRIPTOR_HANDLE` and their like all put an uppercase letter
+    //   against an underscore;
+    // * `dead_code` and `improper_ctypes`, retained from the crate root. Note
+    //   this arm cannot be built on the machine this was authored on (it needs
+    //   an x86_64 host, the oneMKL headers and libclang), so unlike the
+    //   hand-written surfaces below these two are *not* measured. `dead_code` in
+    //   particular may well be unnecessary, since `wrapper.h` sizes the
+    //   generated surface at the whole oneMKL C interface and the
+    //   `pub use bindings::*` below makes all of it reachable — exactly the
+    //   mechanism that makes it unnecessary on the hand-written surfaces;
+    // * `clippy::all`, because generated code is neither reviewed nor
+    //   hand-fixable — scoped *here* precisely so the hand-written surfaces are
+    //   linted (that is how the redundant `?Sized` bound in `aarch64.rs`
+    //   surfaced, and how the wrapper crate's own `useless_conversion` did).
+    //
+    // `deref_nullptr`, `unused_imports` and `suspicious_runtime_symbol_definitions`
+    // are deliberately *not* carried over. The first two were never observed to
+    // fire; the third is described by rustc as "suspicious definition of a symbol
+    // used by the standard library", and neither the generated output nor
+    // anything else in this workspace *defines* such a symbol — bindgen only
+    // declares `malloc`/`realloc`, which that lint does not cover. If this arm
+    // then warns in CI, add the specific lint back to this block with the
+    // warning it silences, not to the crate root.
+    #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
+    #![allow(dead_code)]
+    #![allow(improper_ctypes)]
+    #![allow(clippy::all)]
+
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+// Kept as a wildcard so every `nuvai_mkl_sys::<symbol>` path the safe wrapper
+// already uses resolves unchanged on Intel targets.
+#[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
+pub use bindings::*;

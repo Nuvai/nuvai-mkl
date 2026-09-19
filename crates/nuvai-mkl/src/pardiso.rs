@@ -73,9 +73,21 @@ pub struct Pardiso {
     /// System size from the most recent `solve` (Intel targets only).
     #[cfg(not(target_arch = "aarch64"))]
     n: i32,
-    /// True once the analysis phase has run (Intel targets only).
+    /// True once `pardisoinit` has run, i.e. once a phase-`-1` release is both
+    /// legal and necessary (Intel targets only).
+    ///
+    /// Set in [`Pardiso::new`], immediately after `pardisoinit` — *not* once the
+    /// analysis phase has succeeded, which is what this flag used to mean
+    /// (#23). Phase 11 can fail (error `-2`, out of memory, among others) after
+    /// partially allocating, and a handle whose flag was still false skipped
+    /// the release in [`Drop`] and leaked that memory. `pardisoinit` is what
+    /// makes a later phase `-1` legal, so it is the condition that gates the
+    /// release; being set at construction it cannot be missed by a failing
+    /// phase. It is true for every Intel handle today, and stays a field rather
+    /// than dropping the gate because the invariant it records — "PARDISO state
+    /// that only phase `-1` frees may exist" — is what `Drop` is keyed on.
     #[cfg(not(target_arch = "aarch64"))]
-    analyzed: bool,
+    release_pending: bool,
     /// Cached QR factorization plus the CSR matrix that produced it (Apple
     /// Silicon only). Reused across `solve` calls when the matrix is unchanged.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -130,7 +142,10 @@ impl Pardiso {
                 mtype,
                 iparm,
                 n: 0,
-                analyzed: false,
+                // `pardisoinit` has run, so a phase-`-1` release is legal from
+                // here on — see the field's docs for why the flag is set here
+                // rather than after a successful analysis (#23).
+                release_pending: true,
                 _not_send_sync: PhantomData,
             }
         }
@@ -244,9 +259,11 @@ impl Pardiso {
                     &mut error,
                 );
                 if error != 0 {
+                    // No flag to clear on the way out: `release_pending` was
+                    // already set in `new`, so `Drop` still runs phase `-1` for
+                    // the memory this failed phase may have allocated (#23).
                     return Err(Error::pardiso(error, "pardiso phase 11 (analysis)"));
                 }
-                self.analyzed = true;
 
                 // Phase 22: numerical factorization.
                 let phase = 22i32;
@@ -784,7 +801,13 @@ impl Drop for Pardiso {
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            if self.analyzed {
+            // Keyed on "`pardisoinit` ran", not on "the analysis succeeded"
+            // (#23). The analysis phase can fail after partially allocating,
+            // and a handle that survived `pardisoinit` but not phase 11 still
+            // owns that memory — gating the release on a successful analysis
+            // leaked it. `self.n` is `0` when no `solve` ever ran, which phase
+            // `-1` ignores.
+            if self.release_pending {
                 // SAFETY: `self.pt`/`self.iparm` are initialized and
                 // `self.n`/`self.mtype` are valid (set during `solve`); phase
                 // -1 releases PARDISO's internal memory exactly once. The null
@@ -817,5 +840,49 @@ impl Drop for Pardiso {
                 }
             }
         }
+    }
+}
+
+// Intel targets only: the flag under test exists solely on the Intel arm (the
+// Accelerate arm releases its cached factorization, and linux-aarch64 has no
+// backend at all).
+#[cfg(all(test, not(target_arch = "aarch64")))]
+mod tests {
+    use super::*;
+
+    /// Regression test for #23.
+    ///
+    /// `Drop` decides whether to release with phase `-1` from this flag, so the
+    /// flag must be true for *any* handle whose `pardisoinit` has run — the
+    /// invariant is "the handle may own PARDISO memory", not "the analysis
+    /// succeeded". Asserting it straight after `new` is the whole test: the
+    /// previous code set `analyzed = true` only after phase 11 returned
+    /// success, so a phase-11 failure left it false, `Drop` skipped phase `-1`,
+    /// and the partially-allocated analysis memory leaked.
+    ///
+    /// Deliberately not driven through a failing `solve`: forcing a *phase-11*
+    /// failure needs an input oneMKL rejects at analysis, and the test would
+    /// then be asserting on which phase reported the error rather than on the
+    /// invariant. The flag is set before any `pardiso` call can fail, so the
+    /// state after `new` is what makes the leak impossible.
+    #[test]
+    fn a_handle_is_releasable_before_any_solve() {
+        let solver = Pardiso::new(mtype::NONSYMMETRIC);
+        assert!(
+            solver.release_pending,
+            "a handle whose `pardisoinit` has run must be released on drop: a phase-11 \
+             failure can leave partially-allocated analysis memory that only phase -1 \
+             frees (#23)"
+        );
+    }
+
+    /// The flag must not be cleared on the error paths that run after it is
+    /// set — a rejected `solve` still leaves the handle releasable.
+    #[test]
+    fn a_rejected_solve_still_leaves_the_handle_releasable() {
+        let mut solver = Pardiso::new(mtype::NONSYMMETRIC);
+        // Fails on argument lengths, before any `pardiso` call.
+        assert!(solver.solve(&[], &[], &[], &[]).is_err());
+        assert!(solver.release_pending);
     }
 }

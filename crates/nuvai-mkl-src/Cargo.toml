@@ -22,13 +22,13 @@ default = ["accelerate"]
 accelerate = []
 openblas = []
 
-[dependencies]
-ureq = "2.12"
-zip = "0.6"
-zstd = "0.13"
-tar = "0.4"
-sha2 = "0.10"
-
+# There is deliberately no `[dependencies]`. Acquisition runs entirely in
+# `build.rs`, so these are needed only to compile a build script (#24); declaring
+# them here as well put `ureq`/`zip`/`zstd`/`tar`/`sha2` — and their trees,
+# rustls/ring/icu and ~114 crates — in the *runtime* dependency graph of every
+# downstream build, though nothing at runtime referenced them. The library target
+# compiles `src/mkl_info.rs` and `src/backend.rs` only; `src/acquire.rs`, which
+# uses these crates, is `include!`d by `build.rs` alone.
 [build-dependencies]
 ureq = "2.12"
 zip = "0.6"

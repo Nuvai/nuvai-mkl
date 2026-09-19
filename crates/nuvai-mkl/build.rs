@@ -13,8 +13,9 @@
 //! DT_NEEDED for them, and no linker flag reliably forces them in — see that
 //! file for the full reasoning.
 //!
-//! The aarch64 fallbacks carry no Intel MKL, so `locate()` (which panics on
-//! an aarch64 host) is only ever called for the x86_64 Linux/Windows targets.
+//! The aarch64 fallbacks carry no Intel MKL, so [`mkl_info`] is only ever
+//! called for the x86_64 Linux/Windows targets — which are also the only ones
+//! where `nuvai-mkl-src`'s build script publishes the metadata it reads.
 
 fn main() {
     if std::env::var("DOCS_RS").is_ok() {
@@ -73,7 +74,7 @@ fn main() {
         // undefined symbol from a regular object file, which is what
         // `build/force_runtime.c` supplies.
         ("linux", "x86_64") => {
-            let info = nuvai_mkl_src::locate();
+            let info = mkl_info();
             println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-lm,--as-needed");
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", info.lib_dir.display());
             if let Some(omp) = &info.omp_lib_dir {
@@ -104,7 +105,7 @@ fn main() {
         // the exe's directory). Surface the runtime DLL directories so CI can
         // prepend them to PATH and local dev knows where to add them.
         ("windows", "x86_64") => {
-            let info = nuvai_mkl_src::locate();
+            let info = mkl_info();
             for dll_dir in info.dll_dirs() {
                 println!(
                     "cargo:warning=MKL runtime DLLs in {} — add to PATH (or copy beside the exe) before cargo run/test",
@@ -114,4 +115,18 @@ fn main() {
         }
         other => panic!("nuvai-mkl: unsupported target {other:?}"),
     }
+}
+
+/// The MKL install `nuvai-mkl-src` acquired and published to this build script
+/// through `DEP_MKL_*` (#24).
+///
+/// This script used to call `nuvai_mkl_src::locate()` and re-derive the paths
+/// itself. Acquisition now lives entirely in `nuvai-mkl-src`'s build script —
+/// which runs first, and publishes what it found — so re-running it here would
+/// repeat a conda-forge download that has already happened, once per dependent.
+fn mkl_info() -> nuvai_mkl_src::MklInfo {
+    nuvai_mkl_src::MklInfo::from_build_metadata().expect(
+        "nuvai-mkl-src published no DEP_MKL_* metadata — it must stay in this crate's \
+         [build-dependencies] for Cargo to forward it",
+    )
 }

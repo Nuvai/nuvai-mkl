@@ -1,23 +1,24 @@
-// Shared MKL acquisition logic.
+// The oneMKL acquisition machinery: locate the install on the system, or
+// download and extract it from conda-forge into a shared cache.
 //
-// This module is `include!`d by both `build.rs` (to emit linker directives)
-// and `lib.rs` (so downstream build scripts can call [`locate`] to find the
-// headers for bindgen). It locates oneMKL 2026.1.0 on the system, or
-// downloads + extracts it from conda-forge into a shared cache.
+// `build.rs` includes this file, and **only** `build.rs` (#24). It needs
+// `ureq`/`zip`/`zstd`/`tar`/`sha2`, and the library target must not: the two are
+// built from the same source through `include!`, and no `cfg` distinguishes "I
+// am the library target" from "I am a build script" — so leaving this in the
+// library's source keeps those crates in `[dependencies]`, and therefore in the
+// runtime graph of every downstream build, however it is gated.
+//
+// `mkl_info.rs` is the half the library *does* compile: `MKL_VERSION`,
+// `MklInfo`, and the reader that rebuilds one from the metadata published below.
+// `build.rs` includes it immediately before this file, which is where the
+// `env`/`Path`/`PathBuf` names this file uses come from.
 
-#[cfg(not(target_arch = "aarch64"))]
-use std::env;
 #[cfg(not(target_arch = "aarch64"))]
 use std::fs;
 #[cfg(not(target_arch = "aarch64"))]
 use std::io::Read;
-use std::path::Path;
-use std::path::PathBuf;
 #[cfg(not(target_arch = "aarch64"))]
 use sha2::Digest;
-
-/// The oneMKL version this crate acquires and links.
-pub const MKL_VERSION: &str = "2026.1.0";
 
 #[cfg(not(target_arch = "aarch64"))]
 const CONDA_BASE: &str = "https://conda.anaconda.org/conda-forge";
@@ -71,59 +72,15 @@ const LINUX_LLVM_OPENMP: &str = "llvm-openmp-22.1.8-h4922eb0_0.conda";
 const LINUX_LLVM_OPENMP_SHA256: &str =
     "a37aba21b85800af1e7c5b04ba76abab96b6e591eedf99dc6e4df83b0fefd7a5";
 
-/// Resolved location of an MKL install.
-#[derive(Debug, Clone)]
-pub struct MklInfo {
-    /// Directory containing the `mkl*.h` headers.
-    pub include_dir: PathBuf,
-    /// Directory containing the MKL libraries.
-    pub lib_dir: PathBuf,
-    /// Directory containing the OpenMP runtime (`libiomp5.so`, a symlink to
-    /// `libomp.so`) that `libmkl_intel_thread.so.3` needs at load time. Linux
-    /// conda acquisition only; `None` on Windows (the runtime DLL is surfaced
-    /// via [`dll_dirs`]) and on a system oneAPI install (its OpenMP runtime
-    /// ships beside MKL and the loader finds it on the standard path).
-    pub omp_lib_dir: Option<PathBuf>,
-    /// Directories containing the MKL runtime DLLs (Windows only; empty on
-    /// platforms where the runtime loader finds them via rpath / system search).
-    ///
-    /// On `x86_64-pc-windows-msvc` the Windows loader does not search the
-    /// link-search path at runtime, so callers that need to load the MKL DLLs
-    /// (e.g. `cargo run`/`cargo test` on a conda-forge acquisition) must add
-    /// every directory here to `PATH` (or deploy the DLLs beside the
-    /// executable). Multiple directories are listed because the conda-forge
-    /// `mkl` package depends on runtime DLLs that ship in their own packages
-    /// under their own `Library/bin`: `libiomp5md.dll` (OpenMP runtime for the
-    /// default `mkl_intel_thread` layer, from `llvm-openmp`) and `tbb12.dll`
-    /// (TBB threading layer, from `tbb`).
-    pub dll_dirs: Vec<PathBuf>,
-}
-
-impl MklInfo {
-    /// Primary MKL runtime DLL directory, if any (the first of [`dll_dirs`]).
-    ///
-    /// Returns `Some` on Windows (conda-forge acquisition or a system oneAPI
-    /// install); `None` on platforms where the loader finds the shared objects
-    /// via rpath / the system search path. On Windows, prepend [`dll_dirs`] to
-    /// `PATH` (or copy the DLLs beside the executable) before `cargo run` /
-    /// `cargo test` so the loader can resolve `mkl_rt.3.dll`.
-    pub fn dll_dir(&self) -> Option<&Path> {
-        self.dll_dirs.first().map(PathBuf::as_path)
-    }
-
-    /// All directories that must be on `PATH` for the MKL runtime DLLs to load.
-    pub fn dll_dirs(&self) -> &[PathBuf] {
-        &self.dll_dirs
-    }
-}
-
 /// Locate MKL: a system oneAPI install first, then download from conda-forge.
 ///
 /// Intel ships no oneMKL for *any* aarch64 target (Apple Silicon or Linux/ARM),
 /// so on `aarch64` this panics with a clear pointer to the fallback path. The
-/// build script never calls it there (it dispatches on [`backend`] instead), so
-/// this guard only fires if a downstream build script calls `locate()` directly
-/// on aarch64.
+/// build script never calls it there (it dispatches on [`backend`] instead).
+///
+/// This is not in the library target (#24) — build scripts read the metadata
+/// this crate's own build script published, via [`MklInfo::from_build_metadata`],
+/// rather than acquiring a second time.
 pub fn locate() -> MklInfo {
     #[cfg(target_arch = "aarch64")]
     {

@@ -26,5 +26,10 @@
 //! | `aarch64-apple-darwin` (Apple Silicon) | Accelerate (default) or OpenBLAS |
 //! | `aarch64-unknown-linux-gnu` | OpenBLAS (BLAS/LAPACK only; FFT/VML/VSL/sparse unsupported) |
 
-include!("acquire.rs");
+// `acquire.rs` is deliberately absent: it needs the acquisition crates, and
+// this is the target those must not reach (#24). The acquisition itself runs in
+// `build.rs`, which includes both files; what the library exposes here is the
+// version, the `MklInfo` shape, and the reader that rebuilds one from the
+// metadata that build script published.
+include!("mkl_info.rs");
 include!("backend.rs");

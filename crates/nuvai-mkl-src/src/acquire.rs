@@ -85,13 +85,25 @@ fn target_arch() -> String {
 ///
 /// Intel ships no oneMKL for *any* aarch64 target (Apple Silicon or Linux/ARM),
 /// so for an aarch64 *target* this panics with a clear pointer to the fallback
-/// path. The build script never calls it there (it dispatches on [`backend`]
-/// first), so the guard exists for a downstream build script calling `locate()`
-/// directly.
+/// path. In the build script the arm is unreachable — `main` dispatches on
+/// [`backend_for_target`] first and only `Backend::IntelMkl` reaches
+/// `emit_intel_mkl`, which is the sole caller, and that backend is never
+/// selected for an aarch64 target. The guard is kept as the check for that
+/// invariant rather than as a caller-facing one: it used to be described as
+/// protection for "a downstream build script calling `locate()` directly", but
+/// since #24 there is no such caller to protect. This file is `include!`d by
+/// `build.rs` alone, so `locate` is private to that build script's binary —
+/// it is not a library item, cannot be imported, and no dependent can reach it.
+/// A dependent build script reads what this one published instead, through
+/// [`MklInfo::from_build_metadata`], and never acquires a second time.
 ///
-/// This is not in the library target (#24) — build scripts read the metadata
-/// this crate's own build script published, via [`MklInfo::from_build_metadata`],
-/// rather than acquiring a second time.
+/// #39 asked for this to return `Result` rather than panic, on the premise that
+/// a third-party build script could call it and get a hard panic. That premise
+/// is gone: the removal of `locate` from the library target (#24, #60) removed
+/// the public entry point the issue described, and the build-script-internal
+/// caller cannot reach the panicking arm. Nothing in the library target panics
+/// on aarch64 either — [`MklInfo::from_build_metadata`] answers `Option`, and
+/// [`backend_for_target`] answers `Result`.
 pub fn locate() -> MklInfo {
     // Keyed on the *target* arch. This was `#[cfg(target_arch = ...)]`, which in
     // a build script describes the host — so an Apple Silicon host cross-building

@@ -151,6 +151,26 @@ pub const SparseLowerTriangle: SparseTriangle_t = 1;
 /// `unsigned int`, so clang chooses a 4-byte unit). Bit positions:
 /// `transpose` = bit 0, `triangle` = bit 1, `kind` = bits 2..3,
 /// `_reserved` = bits 4..14, `_allocatedBySparse` = bit 15.
+///
+/// `kind` is **2 bits** here, so representable kinds are `SparseOrdinary`(0)
+/// through `SparseSymmetric`(3) only. This is not an oversight: the SDK
+/// declares a *second*, separate attributes struct for complex matrices —
+/// `SparseAttributesComplex_t`, which widens `kind` to 3 bits and adds a
+/// `conjugate_transpose` bit so that `SparseHermitian`(7) becomes
+/// representable. The two types are not interchangeable, and the 2-bit field
+/// in the real-valued struct can never hold `SparseHermitian`.
+///
+/// This crate wraps the real (non-complex) sparse path only — the owner of
+/// this type is `SparseMatrixStructure`, never `SparseMatrixStructureComplex`
+/// — so `SparseAttributes_t` is the correct mirror and the 2-bit `kind` mask
+/// is correct. A `& 0x7` mask would read bit 4 (unused/reserved here, and
+/// `conjugate_transpose` in the *complex* struct) as part of `kind`, so it
+/// must not be widened. See `sparse_attributes_layout_matches_sdk_probe`
+/// below, which pins the layout verified against the SDK headers.
+///
+/// (Verified by a C `sizeof`/bit probe against the macOS SDK: `sizeof == 4`,
+/// `kind = SparseSymmetric` encodes to `0x0c`, `_allocatedBySparse` to
+/// `0x8000`.)
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SparseAttributes_t(pub u32);
@@ -177,7 +197,11 @@ impl SparseAttributes_t {
         ((self.0 >> 1) & 0x1) as SparseTriangle_t
     }
 
-    /// The `kind` field (`SparseOrdinary`..`SparseHermitian`).
+    /// The `kind` field: `SparseOrdinary`(0), `SparseTriangular`(1),
+    /// `SparseUnitTriangular`(2) or `SparseSymmetric`(3).
+    ///
+    /// The mask is `0x3` because this struct's `kind` is 2 bits wide — see the
+    /// type-level docs for why `SparseHermitian`(7) is *not* reachable here.
     pub const fn kind(&self) -> SparseKind_t {
         (self.0 >> 2) & 0x3
     }
@@ -252,8 +276,17 @@ pub struct SparseOpaqueSymbolicFactorization {
 /// Semi-opaque numeric factorization. Returned by value from
 /// `_SparseFactorQR_Double`/`_SparseFactorSymmetric_Double`, so the exact
 /// layout is required for the struct-return ABI. (Verified: `sizeof == 104`.)
+///
+/// Deliberately **not `Copy`** — see the `AmbiguousIfCopy` guard immediately
+/// below, which fails the build if `Copy` is ever re-added. This type owns
+/// heap allocations through `numericFactorization` (and, via
+/// `symbolicFactorization`, its `factorization` pointer), both released with
+/// `_SparseDestroyOpaqueNumeric_Double`. An implicit `Copy` would duplicate
+/// the only owning handle, so dropping both copies frees the same allocation
+/// twice. Returning it by value from an `extern "C"` fn does not require
+/// `Copy`; move semantics are sufficient and are what the callers rely on.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SparseOpaqueFactorization_Double {
     pub status: SparseStatus_t,
     pub attributes: SparseAttributes_t,
@@ -263,6 +296,24 @@ pub struct SparseOpaqueFactorization_Double {
     pub solveWorkspaceRequiredStatic: usize,
     pub solveWorkspaceRequiredPerRHS: usize,
 }
+
+// Compile-time guard: `SparseOpaqueFactorization_Double` must never be `Copy`
+// again (see its docs — an implicit copy double-frees the numeric
+// factorization). This is `static_assertions::assert_not_impl_any!`'s trick
+// without the dependency: if the type were `Copy`, both `AmbiguousIfCopy`
+// impls would apply, so the `_` in the `AmbiguousIfCopy<_>` projection becomes
+// uninferable and the build fails here with "type annotations needed".
+//
+// Placed at module scope rather than inside `mod tests` so it is checked by
+// every `cargo build`/`check`, not only by `cargo test`.
+const _: fn() = || {
+    trait AmbiguousIfCopy<A> {
+        fn some_item() {}
+    }
+    impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+    impl<T: ?Sized + Copy> AmbiguousIfCopy<u8> for T {}
+    let _ = <SparseOpaqueFactorization_Double as AmbiguousIfCopy<_>>::some_item;
+};
 
 /// Options for the symbolic stage of a sparse factorization.
 /// (Verified: `sizeof == 48`.)
@@ -401,6 +452,90 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the `SparseAttributes_t` bit layout to what a `sizeof`/bit probe
+    /// against the macOS SDK headers actually produces (the crate's stated
+    /// convention for these hand-written layouts, rather than trusting the
+    /// docs).
+    ///
+    /// The `0x30`/`0x8000` assertions are the point of this test: they fail if
+    /// `kind()` is ever widened from `0x3` to `0x7`. Bit 4 is the low bit of
+    /// the *3-bit* `kind` in the **separate** `SparseAttributesComplex_t`, and
+    /// bit 5 is that struct's `conjugate_transpose`; neither exists in this
+    /// struct. Widening the mask would decode a complex-struct bit pattern as
+    /// this struct's `kind`.
+    #[test]
+    fn sparse_attributes_layout_matches_sdk_probe() {
+        // Probe: sizeof(SparseAttributes_t) == 4 (clang picks a 4-byte unit
+        // because `_reserved` is declared `unsigned int`).
+        assert_eq!(core::mem::size_of::<SparseAttributes_t>(), 4);
+
+        // `transpose` = bit 0.
+        assert!(SparseAttributes_t(0x1).transpose());
+        assert!(!SparseAttributes_t(0x0).transpose());
+
+        // `triangle` = bit 1 (upper = 0, lower = 1).
+        assert_eq!(SparseAttributes_t(0x2).triangle(), SparseLowerTriangle);
+        assert_eq!(SparseAttributes_t(0x0).triangle(), SparseUpperTriangle);
+
+        // `kind` = bits 2..3: the probe encodes SparseSymmetric(3) as 0x0c.
+        assert_eq!(SparseAttributes_t::symmetric().0, 0x0c);
+        assert!(SparseAttributes_t::symmetric().is_symmetric());
+        assert_eq!(SparseAttributes_t::ordinary().kind(), SparseOrdinary);
+        for kind in [
+            SparseOrdinary,
+            SparseTriangular,
+            SparseUnitTriangular,
+            SparseSymmetric,
+        ] {
+            assert_eq!(SparseAttributes_t(kind << 2).kind(), kind);
+        }
+
+        // Bits 4..5 are reserved in this struct, so they must not alias into
+        // `kind` (this is what a `& 0x7` mask would get wrong).
+        assert_eq!(SparseAttributes_t(0x30).kind(), SparseOrdinary);
+
+        // `_allocatedBySparse` = bit 15: the probe encodes it as 0x8000, which
+        // is also outside `kind`.
+        assert_eq!(SparseAttributes_t(0x8000).kind(), SparseOrdinary);
+    }
+
+    /// `SparseOpaqueFactorization_Double` owns heap through raw pointers and is
+    /// freed by `_SparseDestroyOpaqueNumeric_Double`, so implicit duplication
+    /// must be impossible. The module-scope `AmbiguousIfCopy` const above
+    /// proves the negative at compile time (and is checked by `cargo build`);
+    /// this asserts the positive half — that a *move* still works, so the
+    /// guard has not simply made the type unusable.
+    #[test]
+    fn factorization_handle_moves_but_does_not_copy() {
+        fn consume(f: SparseOpaqueFactorization_Double) -> SparseStatus_t {
+            f.status
+        }
+        let f = SparseOpaqueFactorization_Double {
+            status: SparseStatusOK,
+            attributes: SparseAttributes_t::ordinary(),
+            symbolicFactorization: SparseOpaqueSymbolicFactorization {
+                status: SparseStatusOK,
+                rowCount: 1,
+                columnCount: 1,
+                attributes: SparseAttributes_t::ordinary(),
+                blockSize: 1,
+                type_: SparseFactorizationQR,
+                factorization: core::ptr::null_mut(),
+                workspaceSize_Float: 0,
+                workspaceSize_Double: 0,
+                factorSize_Float: 0,
+                factorSize_Double: 0,
+            },
+            userFactorStorage: false,
+            numericFactorization: core::ptr::null_mut(),
+            solveWorkspaceRequiredStatic: 0,
+            solveWorkspaceRequiredPerRHS: 0,
+        };
+        // Moved into `consume` — compiles only because it is not `Copy`
+        // *and* move semantics are intact.
+        assert_eq!(consume(f), SparseStatusOK);
+    }
 
     /// Link-level smoke test: exercises a real Accelerate symbol so the P2
     /// gate ("sys links clean on aarch64") proves the framework link, not

@@ -84,10 +84,11 @@ pub struct Pardiso {
 /// A cached Accelerate QR factorization and the CSR matrix that produced it
 /// (Apple Silicon only).
 ///
-/// [`SparseOpaqueFactorization_Double`] is `#[derive(Clone, Copy)]` for the
-/// struct-return ABI but owns heap memory through raw pointers, so it is stored
-/// here by value and moved — never `Copy`ed — to avoid aliasing the allocation
-/// and double-freeing it in `Drop`.
+/// [`SparseOpaqueFactorization_Double`] owns heap memory through raw pointers
+/// and is deliberately **not `Copy`** (returning it by value needs only move
+/// semantics), so it is stored here by value and moved into `Drop` — the
+/// compiler now rejects any accidental duplication that would alias the
+/// allocation and double-free it.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 struct CachedFactor {
     /// The owned QR factorization (output of `_SparseFactorQR_Double`).
@@ -376,8 +377,8 @@ impl Pardiso {
             if let Some(old) = self.cached.take() {
                 let mut old_factor = old.factor;
                 // SAFETY: `old_factor` is an owned, initialized factorization
-                // that is no longer needed; moved out by value (never `Copy`ed)
-                // and destroyed exactly once here.
+                // that is no longer needed; moved out by value (the handle is
+                // not `Copy`) and destroyed exactly once here.
                 unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut old_factor) };
             }
             self.cached = Some(CachedFactor {
@@ -651,8 +652,8 @@ impl Drop for Pardiso {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             // Release the cached QR factorization exactly once. It is moved out
-            // by value (`take` into a local) so the raw-pointer payload is
-            // never `Copy`ed/aliased.
+            // by value (`take` into a local); the handle is not `Copy`, so the
+            // raw-pointer payload cannot be silently aliased.
             if let Some(cached) = self.cached.take() {
                 let mut factor = cached.factor;
                 // SAFETY: `factor` is an owned, initialized factorization

@@ -252,12 +252,18 @@ fn conda_base() -> String {
 fn fetch_and_extract_conda(file: &str, sha256: &str, pkg_dir: &Path) -> PathBuf {
     let url = format!("{}/{}/{}", conda_base(), conda_subdir(), file);
     let dest = pkg_dir.join(file);
-    if !dest.exists() {
-        download(&url, &dest);
+    if dest.exists() {
+        // Verify a cached archive too — a corrupted or tampered cache file must
+        // fail loudly rather than reach the linker path. Unlike a fresh
+        // download this is not retried: re-reading the same bytes cannot change
+        // the answer, so the cache entry is dropped and the build re-run instead.
+        if let Err(e) = verify_sha256(&dest, sha256, file) {
+            let _ = fs::remove_file(&dest);
+            panic!("{e}. Removed {}; re-run to download it again.", dest.display());
+        }
+    } else {
+        download_verified(&url, &dest, sha256, file);
     }
-    // Verify both freshly downloaded and cached archives: a corrupted or
-    // tampered cache file must fail loudly rather than reach the linker path.
-    verify_sha256(&dest, sha256, file);
     let out = pkg_dir.join(file.trim_end_matches(".conda"));
     if !out.exists() {
         fs::create_dir_all(&out).expect("create conda extract dir");
@@ -266,36 +272,35 @@ fn fetch_and_extract_conda(file: &str, sha256: &str, pkg_dir: &Path) -> PathBuf 
     out
 }
 
-/// Confirm `path` hashes to `expected` (the pinned conda-forge digest),
-/// removing the archive and panicking if it does not.
-fn verify_sha256(path: &Path, expected: &str, file: &str) {
+/// Hash `path` and compare it to `expected`.
+///
+/// The received length is part of the error because it is what separates the
+/// two ways this fails: a short or empty body is a refused transfer, while a
+/// plausible length that still misses the digest is *other content* altogether —
+/// a proxy's error page, say. The digest alone can only say "not this".
+fn verify_sha256(path: &Path, expected: &str, file: &str) -> Result<(), String> {
     let mut archive = fs::File::open(path)
-        .unwrap_or_else(|e| panic!("open downloaded archive {}: {e}", path.display()));
+        .map_err(|e| format!("open downloaded archive {}: {e}", path.display()))?;
     let mut hasher = sha2::Sha256::new();
     let mut buf = [0u8; 64 * 1024];
+    let mut len = 0u64;
     loop {
         let n = archive
             .read(&mut buf)
-            .unwrap_or_else(|e| panic!("hash downloaded archive {}: {e}", path.display()));
+            .map_err(|e| format!("hash downloaded archive {}: {e}", path.display()))?;
         if n == 0 {
             break;
         }
+        len += n as u64;
         hasher.update(&buf[..n]);
     }
     let actual = format!("{:x}", hasher.finalize());
     if actual != expected {
-        // Drop it. A file that failed its digest must not survive to be re-read
-        // by the next build — and on Windows CI this cache directory is exactly
-        // what `actions/cache` re-saves when the job ends, so leaving a bad
-        // archive in place is how one failed download becomes a sticky,
-        // self-inflicted failure that outlives the incident that caused it.
-        let _ = fs::remove_file(path);
-        panic!(
-            "checksum mismatch for {file}: expected {expected}, got {actual}. \
-             Removed {}; re-run to download it again.",
-            path.display()
-        );
+        return Err(format!(
+            "checksum mismatch for {file}: expected {expected}, got {actual} ({len} bytes)"
+        ));
     }
+    Ok(())
 }
 
 fn conda_subdir() -> &'static str {
@@ -319,8 +324,15 @@ fn cache_dir() -> PathBuf {
     dir
 }
 
-/// Download `url` to `dest`, retrying a refusal before giving up.
-fn download(url: &str, dest: &Path) {
+/// Download `url` to `dest` and check it against `sha256`, retrying the whole
+/// attempt before giving up.
+///
+/// The retry has to cover the digest, not just the transfer. The CDN in front of
+/// conda-forge answers a request it will not serve with *either* an empty body
+/// *or* a body of some other content entirely — CI has seen both, from the same
+/// URL minutes apart — and only the digest recognises the second shape. Retrying
+/// the transfer alone would accept the garbage and report it as a corrupt cache.
+fn download_verified(url: &str, dest: &Path, sha256: &str, file: &str) {
     let mut last = String::new();
     for attempt in 1..=DOWNLOAD_ATTEMPTS {
         if attempt > 1 {
@@ -333,9 +345,17 @@ fn download(url: &str, dest: &Path) {
             );
             std::thread::sleep(pause);
         }
-        match download_once(url, dest) {
+        match download_once(url, dest).and_then(|()| verify_sha256(dest, sha256, file)) {
             Ok(()) => return,
-            Err(e) => last = e,
+            Err(e) => {
+                // Never leave a rejected archive behind: `fetch_and_extract_conda`
+                // reads the *existence* of `dest` as a cached success, and on
+                // Windows CI this directory is what `actions/cache` re-saves when
+                // the job ends — so one bad download would otherwise outlive the
+                // incident that caused it.
+                let _ = fs::remove_file(dest);
+                last = e;
+            }
         }
     }
     panic!("failed to download {url} after {DOWNLOAD_ATTEMPTS} attempts: {last}");

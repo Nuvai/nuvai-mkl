@@ -115,21 +115,24 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ### Fixed
 
-- A refused MKL download is reported as a refusal instead of as a corrupt cache
-  (issue #19). The CDN in front of conda-forge answered CI with `2xx` and a
-  **0-byte body**; `download()` wrote that empty file to disk, and the checksum
-  check then failed on it and reported `checksum mismatch … Delete <path> and
-  retry` — sending the reader to clear a cache that was never the problem, with
-  no HTTP status anywhere in the output to say what had actually happened. The
-  download now streams into `<dest>.part` and is renamed into place only once
-  the body is complete, so a refused or truncated transfer cannot be mistaken
-  for a cached success — which is what made the failure survive to the verifier
-  at all, since the extractor skips the download whenever `dest` exists. An
-  empty body, or a shortfall against a declared `Content-Length`, is reported
-  with its HTTP status and retried with backoff; and an archive that fails its
-  digest is deleted rather than left in place, which is also how a single bad
+- A refused MKL download is reported as a refusal instead of as a corrupt cache,
+  and is retried (issue #19). The CDN in front of conda-forge answered CI with
+  `2xx` bodies it would not serve — sometimes **0 bytes**, sometimes a few dozen
+  bytes of something else entirely — and `download()` wrote whatever arrived
+  straight to disk, so the checksum check then reported `checksum mismatch …
+  Delete <path> and retry`. That sent the reader to clear a cache that was never
+  the problem, discarded the HTTP status, and said nothing about what had
+  actually been received. Downloads now stream into `<dest>.part` and are renamed
+  into place only once the body is complete, so a refused transfer cannot pass
+  for a cached success — which is how the failure reached the verifier at all,
+  since the extractor skips the download whenever `dest` exists. The whole
+  attempt, **digest included**, is retried with backoff: the digest is the only
+  check that recognises the second shape of refusal, so retrying the transfer
+  alone would accept the garbage. A failure now names the received length, which
+  is what separates a short body from other content altogether, and an archive
+  that fails its digest is deleted rather than left behind — also how one bad
   download used to outlive its cause on the Windows job, whose `actions/cache`
-  entry re-saves this directory when the job ends.
+  entry re-saves that directory when the job ends.
 
 - Enabling both backend features on Apple Silicon is a compile error instead of
   a silent choice (issue #35). `--features accelerate,openblas` resolved to

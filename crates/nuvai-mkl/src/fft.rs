@@ -12,6 +12,18 @@
 //! default `1/n` scaling, so `backward(forward(x)) == x`. On aarch64 the vDSP
 //! inverse DFT is itself unnormalized, so the shim applies the `1/n` scale
 //! explicitly to preserve that contract.
+//!
+//! ## macOS deployment target
+//!
+//! On `aarch64-apple-darwin` this module can select the interleaved vDSP DFT
+//! (`vDSP_DFT_Interleaved_*`), which is `API_AVAILABLE(macos(12.0))`.
+//! `nuvai-mkl`'s own build script pins its own binaries to that minimum, but
+//! that cannot reach a downstream consumer's link — a crate depending on
+//! `nuvai-mkl` must set
+//! `MACOSX_DEPLOYMENT_TARGET=12.0` (or higher) itself, or the resulting
+//! binary will abort at load time with "Symbol not found" on macOS 10.15/11
+//! (nuvai-mkl's build script emits a `cargo:warning` reminder of this for
+//! every build; see #32).
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::cell::RefCell;

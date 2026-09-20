@@ -53,10 +53,19 @@ fn main() {
             // the aarch64-apple-darwin deployment target to 11.0, which would
             // strong-link those symbols and abort at load time on macOS 10.15/11
             // with "Symbol not found". Pin the minimum so nuvai-mkl's own
-            // test/example/bench binaries load only on macOS 12.0+. Downstream
-            // binaries must set MACOSX_DEPLOYMENT_TARGET=12.0 themselves — a
-            // library build script cannot force the final link's min OS.
+            // test/example/bench binaries load only on macOS 12.0+. `rustc-env`
+            // only reaches *this* crate's own rustc invocation — it cannot set
+            // a downstream consumer's deployment target, so a `cargo:warning`
+            // (surfaced by Cargo for every crate the build touches, including
+            // this one) is the only channel that reaches them: they must set
+            // MACOSX_DEPLOYMENT_TARGET=12.0 themselves before linking (#32).
             println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=12.0");
+            println!(
+                "cargo:warning=nuvai-mkl's FFT backend on Apple Silicon calls a macOS \
+                 12.0+ Accelerate symbol (vDSP_DFT_Interleaved_*). Binaries linking \
+                 nuvai-mkl must set MACOSX_DEPLOYMENT_TARGET=12.0 (or higher) themselves, \
+                 or they will abort at load time with \"Symbol not found\" on macOS 10.15/11."
+            );
         }
         // Intel x86_64 Linux: keep libm and the OpenMP runtime in the final
         // link (conda's `libmkl_core.so.3` references `log`/`exp`/`sin`/… and

@@ -28,6 +28,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/backend.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENBLAS");
     println!("cargo:rerun-if-env-changed=OPENBLAS_ROOT");
+    // Changing the mirror changes what is fetched, so the script must re-run.
+    println!("cargo:rerun-if-env-changed=NUVAI_MKL_CONDA_BASE");
 
     // docs.rs has no network and no MKL; skip linking there.
     if std::env::var("DOCS_RS").is_ok() {

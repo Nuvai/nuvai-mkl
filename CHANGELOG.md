@@ -9,6 +9,12 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ### Added
 
+- The conda-forge base URL `nuvai-mkl-src` fetches from is overridable through
+  `NUVAI_MKL_CONDA_BASE`, so a mirror can stand in when conda-forge's CDN
+  refuses a request (issue #19). Every archive is still checked against the
+  pinned SHA-256 it is fetched under, so a mirror cannot substitute different
+  bytes — it changes where the bytes come from, not what is accepted.
+
 - MKL error codes are decoded into descriptions (issue #33). `Error` now records
   which library's code space a status came from, and `Display` appends the
   meaning, so a sparse solve failure reads `MKL error (code -4): pardiso phase
@@ -108,6 +114,32 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   by declaring `c_ulong` where the symbol's signature expects `usize`.
 
 ### Fixed
+
+- A refused MKL download is reported as a refusal instead of as a corrupt cache,
+  and is retried (issue #19). The CDN in front of conda-forge answered CI with
+  `2xx` bodies it would not serve — sometimes **0 bytes**, sometimes a few dozen
+  bytes of something else entirely — and `download()` wrote whatever arrived
+  straight to disk, so the checksum check then reported `checksum mismatch …
+  Delete <path> and retry`. That sent the reader to clear a cache that was never
+  the problem, discarded the HTTP status, and said nothing about what had
+  actually been received. Downloads now stage into a per-process `.part` file,
+  are checked against the pinned digest **before** being installed at their final
+  name, and the whole attempt — digest included — is retried with backoff: the
+  digest is the only check that recognises the second shape of refusal, so
+  retrying the transfer alone would accept the garbage. A failure names the
+  received length, which is what separates a short body from other content
+  altogether.
+
+  The staging file is per-process because `nuvai-mkl-src` is both a dependency
+  and a build-dependency of the crates above it: Cargo builds it as two units and
+  runs **two** build scripts against this one cache directory, so on CI both
+  fetch the same archives at the same time. A shared staging name lets them
+  truncate each other mid-download, and removing the final archive after a failed
+  attempt lets a unit whose fetch was refused delete the archive the other one
+  had just verified — which surfaced as `open .conda: NotFound` during
+  extraction, from a process that had itself downloaded successfully. Nothing on
+  this path deletes an archive any more; a rejected attempt leaves only its own
+  staging file, which it cleans up.
 
 - Enabling both backend features on Apple Silicon is a compile error instead of
   a silent choice (issue #35). `--features accelerate,openblas` resolved to
@@ -275,6 +307,18 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   they cannot lose anything. The preconditions the function indexes on unchecked
   (`row_index.len() == n + 1`, `values.len() == columns.len()`) are now
   debug-asserted. Flagged as a follow-up at the bottom of PR #59.
+
+- `nuvai-mkl`'s `build.rs` now surfaces the macOS 12.0 deployment-target
+  requirement its `aarch64-apple-darwin` arm has always had (issue #32). The
+  interleaved vDSP DFT the FFT backend can select is
+  `API_AVAILABLE(macos(12.0))`, and the build script's `cargo:rustc-env=
+  MACOSX_DEPLOYMENT_TARGET=12.0` only reaches `nuvai-mkl`'s own
+  test/example/bench binaries — it cannot set a downstream consumer's
+  deployment target, so a binary that links `nuvai-mkl` without setting that
+  variable itself would abort at load with "Symbol not found" on macOS
+  10.15/11, with nothing in the build output to explain why. The build script
+  now also emits a `cargo:warning` naming the requirement and the fix, and the
+  `fft` module docs carry the same note.
 
 ### Documentation
 

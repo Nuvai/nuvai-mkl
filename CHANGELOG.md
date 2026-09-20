@@ -191,6 +191,26 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ### Fixed
 
+- A cold-cache build no longer races itself into a link failure
+  (`unable to find library -lmkl_rt`) on the first build of any clean machine
+  (issue #64). `fetch_and_extract_conda` guarded extraction with a bare
+  `out.exists()` check, but `nuvai-mkl-src` runs as **two** build-script units
+  sharing one cache directory — the same shape as issue #19's download race,
+  just one step later. `tar.unpack` fills `out` incrementally, so the
+  directory existed from its first written entry, long before the payload was
+  complete: a second unit could see it, skip extraction, and publish its
+  `lib_dir` while the first unit was still unpacking, so anything that linked
+  against it — the `nuvai-mkl`/`nuvai-mkl-sys` build scripts — could reach the
+  linker before `libmkl_rt.so` had been written. It reported itself as a link
+  failure rather than an acquisition one, pointing a reader at the wrong crate.
+  Extraction now unpacks into a per-process staging directory and `fs::rename`s
+  it into place, the same "existence implies complete" invariant `install()`
+  already gave the archive path — a directory at the final path can no longer
+  be a partial one. `x86_64-linux` CI (which runs cold on every push, unlike
+  `x86_64-windows`) now repeats a cleared-cache `cargo test --workspace` several
+  times as a regression guard, since `acquire.rs` is included only by `build.rs`
+  and reachable by no `#[cfg(test)]` (issue #24).
+
 - A refused MKL download is reported as a refusal instead of as a corrupt cache,
   and is retried (issue #19). The CDN in front of conda-forge answered CI with
   `2xx` bodies it would not serve — sometimes **0 bytes**, sometimes a few dozen

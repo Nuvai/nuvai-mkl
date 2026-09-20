@@ -63,16 +63,30 @@ before committing to it:
    at a higher level are unaffected; callers relying on MKL's own threading
    are not the target user for this feature in its first cut).
 
-5. **Link recipe: `-Wl,--start-group libmkl_intel_lp64.a libmkl_sequential.a
-   libmkl_core.a -Wl,--end-group -lpthread -ldl -lm`**, emitted as raw
-   `cargo:rustc-link-arg` directives (`emit_intel_mkl_static` in
-   `nuvai-mkl-src/build.rs`). The three archives resolve symbols circularly —
-   `mkl_core` calls back into the interface and threading layers as well as
-   being called by them — which no linear ordering of plain
-   `cargo:rustc-link-lib=static` directives can resolve; `--start-group`/
-   `--end-group` tells the linker to re-scan the group until nothing new
-   resolves, which is what Intel's own link-line advisor prescribes for this
-   exact case.
+5. **Link recipe: `-Wl,--start-group,-l:libmkl_intel_lp64.a,-l:libmkl_sequential.a,
+   -l:libmkl_core.a,--end-group,-lpthread,-ldl,-lm`**, emitted as a single raw
+   `cargo:rustc-link-arg` argument — and emitted from **`nuvai-mkl/build.rs`**
+   (`emit_intel_mkl_static`), not from `nuvai-mkl-src`, even though
+   `nuvai-mkl-src` is the sole `links = "mkl"` provider for everything else.
+   `rustc-link-arg` is scoped to the *emitting* package's own binaries; it is
+   not a propagating directive the way `rustc-link-lib`/`rustc-link-search`
+   are, and `nuvai-mkl-src` owns no binaries of its own. An earlier revision
+   of this feature emitted the group from `nuvai-mkl-src` and passed
+   acquisition, caching, `cargo check`, and `cargo clippy` — clippy's default
+   invocation never links — while silently failing to link real binaries at
+   all (dozens of undefined MKL symbols, caught by remote x86_64 Linux
+   validation rather than by any of those checks). `pthread`/`dl`/`m` are
+   appended in the *same* argument, immediately after `--end-group`, rather
+   than as separate `cargo:rustc-link-lib=dylib=…` directives: `ld`/`mold`
+   only resolve a library against symbol references already seen earlier on
+   the command line, and Cargo does not guarantee a `rustc-link-lib` directive
+   from one crate lands after a `rustc-link-arg` from another on the final
+   link line. The three archives also resolve symbols circularly — `mkl_core`
+   calls back into the interface and threading layers as well as being called
+   by them — which no linear ordering of plain `cargo:rustc-link-lib=static`
+   directives can resolve; `--start-group`/`--end-group` tells the linker to
+   re-scan the group until nothing new resolves, which is what Intel's own
+   link-line advisor prescribes for this exact case.
 
 6. **No rpath, no `force_runtime.c` trick, for the static path.** Both exist
    in `nuvai-mkl/build.rs` only because a *dynamic* `.so` can leave a symbol
@@ -92,8 +106,9 @@ before committing to it:
 
 - `cargo build --features static` on `x86_64-unknown-linux-gnu` produces a
   binary with no runtime dependency on `libmkl_rt.so`/`libiomp5.so` — `ldd`
-  confirms only libc/libm/libpthread/libdl (verified as an acceptance
-  criterion; see task #68).
+  should show only libc/libm/libpthread/libdl. The CI job
+  `x86_64-linux-static` asserts this on every run (see task #68's acceptance
+  criteria).
 - The default (no `static`) build path is unaffected: `static_link` defaults
   to `false`, and `acquire.rs`/`build.rs` only branch on it when the feature
   is enabled.

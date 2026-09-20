@@ -45,6 +45,22 @@ fn main() {
     let backend = backend_for_target(&target_os, &target_arch, target_env.as_deref())
         .unwrap_or_else(|e| panic!("{e}"));
 
+    // `static` (ADR-0005) is x86_64-unknown-linux-gnu only: no static-archive
+    // conda package exists for Windows, and Accelerate/OpenBLAS have no static
+    // form. The library-target `compile_error!` in `backend.rs` catches this
+    // for the crate itself, but a build script is host-compiled and cannot
+    // `compile_error!` for a *different* target — so cross-compiling
+    // `--target x86_64-pc-windows-msvc --features static` from any host must be
+    // caught here instead, loudly, rather than silently linking dynamically.
+    if wants_static_link() && !(target_os == "linux" && target_arch == "x86_64") {
+        panic!(
+            "nuvai-mkl-src: the `static` feature is only supported on \
+             x86_64-unknown-linux-gnu (target is {target_os}-{target_arch}) — Windows has \
+             no static-archive conda package, and Accelerate/OpenBLAS (the aarch64 \
+             fallbacks) have no static form to switch to. Disable `static` for this target."
+        );
+    }
+
     match backend {
         Backend::IntelMkl => emit_intel_mkl(&target_os),
         Backend::Accelerate => {
@@ -105,6 +121,7 @@ fn emit_intel_mkl(target_os: &str) {
     println!("cargo:rustc-link-search=native={}", info.lib_dir.display());
 
     match target_os {
+        "linux" if info.static_link => emit_intel_mkl_static(),
         "linux" => {
             println!("cargo:rustc-link-lib=dylib=mkl_rt");
             println!("cargo:rustc-link-lib=dylib=dl");
@@ -158,4 +175,57 @@ fn emit_intel_mkl(target_os: &str) {
         println!("cargo::metadata=DLL_DIR_{i}={}", dll_dir.display());
     }
     println!("cargo::metadata=VERSION={}", MKL_VERSION);
+    // Read back by `nuvai-mkl-sys`/`nuvai-mkl`'s build scripts to skip the
+    // dynamic-only linker tricks (rpath, `force_runtime.c`) that a static
+    // archive link neither needs nor has any use for (see
+    // `emit_intel_mkl_static`'s doc comment).
+    println!(
+        "cargo::metadata=STATIC_LINK={}",
+        if info.static_link { "1" } else { "0" }
+    );
+}
+
+/// Statically link Intel oneMKL on `x86_64-unknown-linux-gnu` (`static`
+/// feature — ADR-0005).
+///
+/// Three archives, in the order Intel's own link-line advisor specifies:
+/// `mkl_intel_lp64` (the LP64 C interface, what `nuvai-mkl-sys`'s bindgen
+/// output calls into), `mkl_sequential` (the single-threaded threading layer —
+/// chosen over `mkl_intel_thread`/`mkl_tbb_thread` specifically because it
+/// needs no OpenMP or TBB runtime, so the static link pulls in nothing beyond
+/// libc/libm/libpthread/libdl, which every Linux target already has), and
+/// `mkl_core` (the computational kernels both other layers call into).
+///
+/// The three resolve symbols *circularly* — `mkl_core` calls back into the
+/// interface and threading layers as well as being called by them — which a
+/// linear, single-pass linker command cannot resolve no matter what order the
+/// archives are listed in: whichever one is listed last still has unresolved
+/// references into one listed earlier. `--start-group`/`--end-group` (or the
+/// equivalent repeated-pass behaviour) tells the linker to keep re-scanning
+/// the archives inside the group until nothing new is pulled in, which is
+/// what actually resolves them. This is not a Cargo `rustc-link-lib=static`
+/// concern to route around — those three directives alone, in any order,
+/// leave the group unresolved — so the group is emitted as a raw linker
+/// argument instead.
+///
+/// No rpath and no `force_runtime.c`-style `--no-as-needed` trick: both exist
+/// only for the *dynamic* path, where a `.so` can leave symbols undefined for
+/// the loader to resolve later. A static archive has no "later" — every
+/// symbol a linked object needs must resolve at link time or the link fails
+/// outright — so an incomplete static link surfaces immediately as an
+/// `undefined reference` rather than as a load-time abort, and there is no
+/// runtime search path to set because nothing is loaded at run time.
+fn emit_intel_mkl_static() {
+    println!("cargo:rustc-link-arg=-Wl,--start-group");
+    println!("cargo:rustc-link-arg=-lmkl_intel_lp64");
+    println!("cargo:rustc-link-arg=-lmkl_sequential");
+    println!("cargo:rustc-link-arg=-lmkl_core");
+    println!("cargo:rustc-link-arg=-Wl,--end-group");
+    // Not part of the group: plain external dependencies the archives above
+    // reference (pthread creation, dlopen for MKL's own runtime CPU dispatch,
+    // libm transcendentals), each resolved by one ordinary shared library with
+    // no circularity of its own.
+    println!("cargo:rustc-link-lib=dylib=pthread");
+    println!("cargo:rustc-link-lib=dylib=dl");
+    println!("cargo:rustc-link-lib=dylib=m");
 }

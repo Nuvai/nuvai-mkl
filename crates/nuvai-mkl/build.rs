@@ -84,6 +84,17 @@ fn main() {
         // `build/force_runtime.c` supplies.
         ("linux", "x86_64") => {
             let info = mkl_info();
+            // Static linking (`static` feature — ADR-0005) needs none of this:
+            // every workaround below exists because a *dynamic* `.so` can leave
+            // a symbol undefined for the loader to resolve later (no DT_NEEDED
+            // for libm/OpenMP), which has no equivalent failure mode for a
+            // static archive — `--start-group`/`--end-group` in
+            // `emit_intel_mkl_static` already resolves every symbol at link
+            // time, pulling in `pthread`/`dl`/`m` itself. There is also no
+            // shared object to add an rpath to: the code is in the binary.
+            if info.static_link {
+                return;
+            }
             println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-lm,--as-needed");
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", info.lib_dir.display());
             if let Some(omp) = &info.omp_lib_dir {

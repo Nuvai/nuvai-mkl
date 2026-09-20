@@ -64,7 +64,7 @@ native backend behind the same typed API (ADR-0003) — or returns
 
 Selection is **explicit, never silent** (ADR-0003 decision 2):
 
-- On `x86_64` Linux/Windows targets the backend is always Intel oneMKL; no feature changes that.
+- On `x86_64` Linux/Windows targets the backend is always Intel oneMKL; no feature changes that. On `x86_64-unknown-linux-gnu` the `static` feature changes *how* it links — see [Static linking](#static-linking).
 - On `aarch64-unknown-linux-gnu` the backend is always **OpenBLAS** (`cfg(target_arch = "aarch64")` + `target_os = "linux"`); the `accelerate`/`openblas` features are no-ops there because there is no second backend to choose from.
 - On `aarch64-apple-darwin` the non-MKL path is mandatory (`cfg(target_arch = "aarch64")`); the *choice* of backend is a Cargo feature on `nuvai-mkl`:
 
@@ -96,6 +96,26 @@ link-search path. When acquiring from conda-forge, the DLLs are extracted under
 beside the executable) before `cargo run` / `cargo test`. The system oneAPI path
 on Windows is `MKLROOT`-only (the well-known `/opt/intel/oneapi/…` Unix paths do
 not exist there).
+
+## Static linking
+
+`x86_64-unknown-linux-gnu` only, opt-in (ADR-0005):
+
+```toml
+nuvai-mkl = { git = "https://github.com/Nuvai/nuvai-mkl", features = ["static"] }
+```
+
+This links Intel oneMKL's static archives (`libmkl_intel_lp64.a` +
+`libmkl_sequential.a` + `libmkl_core.a`, the single-threaded/sequential
+threading layer) instead of the dynamic runtime dispatcher (`mkl_rt`). The
+resulting binary has no runtime dependency on `libmkl_rt.so`/`libiomp5.so` —
+useful for container/Lambda-style distribution where a self-contained binary
+avoids `LD_LIBRARY_PATH`/rpath setup, at the cost of a larger download
+(conda-forge's `mkl-static` package is ~130 MB compressed, versus a few MB for
+the dynamic `mkl` package used by default) and a larger binary. `static` is
+unsupported (compile error) on every other target — Windows has no
+static-archive package wired up yet, and Accelerate/OpenBLAS have no static
+form to switch to.
 
 ## Requirements
 

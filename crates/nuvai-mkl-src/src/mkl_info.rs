@@ -46,6 +46,18 @@ pub struct MklInfo {
     /// default `mkl_intel_thread` layer, from `llvm-openmp`) and `tbb12.dll`
     /// (TBB threading layer, from `tbb`).
     pub dll_dirs: Vec<PathBuf>,
+    /// Whether `lib_dir` holds the static archives (`libmkl_*.a`) rather than
+    /// the dynamic runtime dispatcher (`libmkl_rt.so`/`.dll`).
+    ///
+    /// `x86_64-unknown-linux-gnu` only (`static` feature; see ADR-0005) — every
+    /// other target publishes `false`. A dependent build script reads this to
+    /// skip the dynamic-only linker tricks that do not apply to a static
+    /// archive link: the rpath (nothing to find at load time — the code is in
+    /// the binary) and the `--no-as-needed -liomp5`/`force_runtime.c` workaround
+    /// (there is no `libmkl_intel_thread.so.3` leaving `omp_*` undefined,
+    /// because the static link uses the `mkl_sequential` threading layer, which
+    /// has no OpenMP dependency at all).
+    pub static_link: bool,
 }
 
 impl MklInfo {
@@ -109,11 +121,17 @@ impl MklInfo {
         for i in 0..count {
             dll_dirs.push(PathBuf::from(lookup(&format!("DEP_MKL_DLL_DIR_{i}"))?));
         }
+        // Absent on every build published before this field existed (and on
+        // every non-static build going forward) — `false` is the correct
+        // default, not just a placeholder, since those are exactly the builds
+        // that are not statically linked.
+        let static_link = lookup("DEP_MKL_STATIC_LINK").as_deref() == Some("1");
         Some(Self {
             include_dir,
             lib_dir,
             omp_lib_dir,
             dll_dirs,
+            static_link,
         })
     }
 }
@@ -163,6 +181,7 @@ mod mkl_info_tests {
             Some(Path::new("/mkl/Library/bin")),
             "the first published directory is the primary one"
         );
+        assert!(!info.static_link, "absent DEP_MKL_STATIC_LINK means dynamic");
     }
 
     /// The required keys are required: a build script that saw only part of the
@@ -210,6 +229,29 @@ mod mkl_info_tests {
         assert_eq!(info.omp_lib_dir, None);
         assert!(info.dll_dirs().is_empty());
         assert_eq!(info.dll_dir(), None);
+    }
+
+    /// `DEP_MKL_STATIC_LINK` (`static` feature — ADR-0005) is published only
+    /// as `"1"`; every other value, including its absence, reads as `false`
+    /// rather than erroring — unlike the required fields above, a build
+    /// published before this field existed must still parse, as a dynamic
+    /// (non-static) build.
+    #[test]
+    fn static_link_is_true_only_for_the_published_marker() {
+        let with_marker = |value: &str| {
+            from_pairs(&[
+                ("DEP_MKL_INCLUDE_DIR", "/mkl/include"),
+                ("DEP_MKL_LIB_DIR", "/mkl/lib"),
+                ("DEP_MKL_DLL_DIR_COUNT", "0"),
+                ("DEP_MKL_STATIC_LINK", value),
+            ])
+            .expect("all required variables present")
+            .static_link
+        };
+
+        assert!(with_marker("1"), "\"1\" is the published static marker");
+        assert!(!with_marker("0"), "\"0\" is the published dynamic marker");
+        assert!(!with_marker("true"), "only the exact string \"1\" means static");
     }
 
     /// A count that overruns the indices is rejected rather than silently

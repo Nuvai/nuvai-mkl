@@ -75,6 +75,19 @@ const LINUX_LLVM_OPENMP: &str = "llvm-openmp-22.1.8-h4922eb0_0.conda";
 const LINUX_LLVM_OPENMP_SHA256: &str =
     "a37aba21b85800af1e7c5b04ba76abab96b6e591eedf99dc6e4df83b0fefd7a5";
 
+// Static linking (`static` feature, x86_64 Linux only — ADR-0005). conda-forge's
+// `mkl` package ships only the dynamic runtime dispatcher (`libmkl_rt.so`); the
+// static archives (`libmkl_intel_lp64.a`, `libmkl_sequential.a`,
+// `libmkl_core.a`, …) ship in a separate, much larger `mkl-static` package
+// (~530 MB uncompressed for `libmkl_core.a` alone). `mkl-static` also declares
+// a conda-level dependency on `tbb`, but that is for its `libmkl_tbb_thread.a`
+// threading layer, which this crate does not link — `emit_intel_mkl_static`
+// uses `libmkl_sequential.a` instead, so no TBB/OpenMP runtime is needed at
+// link time or load time.
+const LINUX_MKL_STATIC: &str = "mkl-static-2026.1.0-ha770c72_243.conda";
+const LINUX_MKL_STATIC_SHA256: &str =
+    "98ab46deac79118c5d995a8550818265890a0138c7ae9ec5da7806d59ee67d43";
+
 /// The target OS Cargo is building for — `CARGO_CFG_TARGET_OS`, which Cargo
 /// sets for every build script.
 ///
@@ -88,6 +101,19 @@ fn target_os() -> String {
 /// See [`target_os`].
 fn target_arch() -> String {
     env::var("CARGO_CFG_TARGET_ARCH").expect("Cargo sets CARGO_CFG_TARGET_ARCH for build scripts")
+}
+
+/// Whether the `static` feature is enabled on `nuvai-mkl-src`.
+///
+/// Read from `CARGO_FEATURE_STATIC` rather than `cfg!(feature = "static")`: a
+/// build script's `cfg!` reports its own (host-compiled) features, which for a
+/// *library* feature happen to match what a dependent asked for — Cargo unifies
+/// feature flags across one crate's build-script and library units — but
+/// reading the env var directly keeps this file consistent with the rest of
+/// its target/feature detection, which is careful to never let a build
+/// script's `cfg!` stand in for the target it is building for.
+fn wants_static_link() -> bool {
+    env::var("CARGO_FEATURE_STATIC").is_ok()
 }
 
 /// Locate MKL: a system oneAPI install first, then download from conda-forge.
@@ -162,7 +188,12 @@ fn system_mkl() -> Option<MklInfo> {
     } else {
         Vec::new()
     };
-    Some(MklInfo { include_dir, lib_dir, omp_lib_dir: None, dll_dirs })
+    // A system oneAPI install ships both the static archives and the dynamic
+    // dispatcher side by side under the same `lib_dir`, so static linking
+    // (`static` feature, Linux only — ADR-0005) needs no different `lib_dir`
+    // here, only a different choice of files at link time in `emit_intel_mkl`.
+    let static_link = wants_static_link() && target_os() == "linux";
+    Some(MklInfo { include_dir, lib_dir, omp_lib_dir: None, dll_dirs, static_link })
 }
 
 /// One downloadable conda package: `(filename, sha256)`.
@@ -201,12 +232,37 @@ fn download_mkl() -> MklInfo {
         ),
     };
 
-    let mkl_root = fetch_and_extract_conda(mkl_file, mkl_sha, &pkg_dir);
     let include_root = fetch_and_extract_conda(include_file, include_sha, &pkg_dir);
+
+    // Static linking (`static` feature, Linux only — ADR-0005) needs only
+    // `mkl-static` and `mkl-include`: `mkl`'s `lib/` holds the dynamic runtime
+    // dispatcher this path never links, so skip that download rather than fetch
+    // it and leave it unused. `devel.is_none()` narrows this to the Linux arm;
+    // the Windows arm's `PkgSet` always sets `devel`, so this cannot fire there
+    // even if `static` were somehow enabled (see the note in that arm below).
+    if devel.is_none() && wants_static_link() {
+        let static_root = fetch_and_extract_conda(LINUX_MKL_STATIC, LINUX_MKL_STATIC_SHA256, &pkg_dir);
+        return MklInfo {
+            include_dir: include_root.join("include"),
+            lib_dir: static_root.join("lib"),
+            omp_lib_dir: None,
+            dll_dirs: Vec::new(),
+            static_link: true,
+        };
+    }
+
+    let mkl_root = fetch_and_extract_conda(mkl_file, mkl_sha, &pkg_dir);
 
     if let Some((devel_file, devel_sha)) = devel {
         // Windows conda packages use a `Library/` prefix (`Library/include`,
         // `Library/lib`, `Library/bin`); import libs come from `mkl-devel`.
+        //
+        // Static linking (`static` feature) is Linux-only for now (ADR-0005):
+        // `wants_static_link()` is not consulted here, so a Windows build with
+        // the feature enabled silently keeps linking dynamically. That gap is
+        // closed by the `compile_error!`/`Err` pair in `backend.rs`, which
+        // reject `static` on every target but `x86_64-unknown-linux-gnu` before
+        // this function is ever reached — this arm never sees the feature on.
         let devel_root = fetch_and_extract_conda(devel_file, devel_sha, &pkg_dir);
         let mut dll_dirs = vec![mkl_root.join("Library").join("bin")];
         for (file, sha) in runtime {
@@ -217,6 +273,7 @@ fn download_mkl() -> MklInfo {
             lib_dir: devel_root.join("Library").join("lib"),
             omp_lib_dir: None,
             dll_dirs,
+            static_link: false,
         }
     } else {
         // Linux conda packages lay out headers under `include/` and libs under
@@ -232,6 +289,7 @@ fn download_mkl() -> MklInfo {
             lib_dir: mkl_root.join("lib"),
             omp_lib_dir,
             dll_dirs: Vec::new(),
+            static_link: false,
         }
     }
 }

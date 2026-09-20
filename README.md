@@ -74,7 +74,7 @@ Selection is **explicit, never silent** (ADR-0003 decision 2):
 | `openblas` | — | Use OpenBLAS for BLAS/LAPACK instead of vecLib (opt-in; FFT/VML/sparse/VSL still use Accelerate/`rand`). |
 
 - The active backend is queryable at build time via `nuvai_mkl_src::backend()` / `nuvai_mkl_src::backend_tag()`.
-- If both features are enabled the selection is still explicit (never silently picked): the first matching backend wins and is reported.
+- Enabling **both** features is a compile error, not a silent pick — and so is enabling neither (`--no-default-features` with no replacement). The backend is never implicitly resolved (ADR-0003, #35).
 - A domain with no selected backend fails to compile or returns `ErrorKind::Unsupported` — it never degrades silently.
 
 ## Platform support
@@ -104,6 +104,75 @@ not exist there).
 - `libclang` + `bindgen` for regenerating FFI bindings on Intel targets (LLVM on Windows, `libclang-dev` on Linux). The ARM64 aarch64 targets use a hand-written FFI surface and need no libclang.
 - On `aarch64-apple-darwin`, **macOS 12.0+** is required: the FFT backend uses vDSP's interleaved-complex DFT (`vDSP_DFT_Interleaved_*`), which is `API_AVAILABLE(macos(12.0))`.
 - On `aarch64-unknown-linux-gnu`, OpenBLAS is the sole backend: install `libopenblas-dev` (system default search path), or point `OPENBLAS_ROOT` at a conda/pip install — `nuvai-mkl-src` adds its `lib` dir to the propagated link-search path, and the workspace's own test/example binaries get the matching runtime rpath via `nuvai-mkl`'s build script (`cargo:rustc-link-arg` only applies to the emitting crate's own targets, so downstream crates linking a non-system OpenBLAS must set their own rpath).
+
+## Installation
+
+`nuvai-mkl` is consumed **from this repository**, not from crates.io — it is not
+published to a registry (ADR-0004). Depend on the wrapper crate only:
+`nuvai-mkl-sys` and `nuvai-mkl-src` resolve through it. `nuvai_mkl_src::backend()`
+and `backend_tag()` are public if you want to report the active backend yourself.
+
+The workspace declares `rust-version = "1.99"` (edition 2024), so Cargo refuses an
+older toolchain; today that means a **nightly** toolchain. Nothing pins one for
+you — there is no `rust-toolchain.toml` — so pin it in your own project. See
+[Requirements](#requirements) for the per-target prerequisites, and expect a
+~140 MB oneMKL download into `~/.cache/nuvai-mkl/` on the Intel targets the first
+time you build.
+
+### Git dependency (recommended)
+
+```toml
+[dependencies]
+nuvai-mkl = { git = "https://github.com/Nuvai/nuvai-mkl", tag = "v0.1.0" }
+```
+
+Cargo fetches the repository and locates `nuvai-mkl` in `crates/nuvai-mkl` by
+package name — the crate is not at the repository root, which is fine for a git
+dependency. The inner crates come from the same checkout.
+
+Cargo treats tags as mutable, so to pin something that cannot move under you, name
+the commit instead:
+
+```toml
+nuvai-mkl = { git = "https://github.com/Nuvai/nuvai-mkl", rev = "<commit-sha>" }
+```
+
+Omitting both takes the tip of the default branch, re-resolved on `cargo update`.
+
+If your environment keeps git credentials in a CLI helper (SSO, Keychain,
+`gh auth`), set `CARGO_NET_GIT_FETCH_WITH_CLI=true`; otherwise use the SSH URL,
+`git = "ssh://git@github.com/Nuvai/nuvai-mkl.git"`.
+
+### Path dependency (sibling checkout)
+
+```toml
+[dependencies]
+nuvai-mkl = { path = "../nuvai-mkl/crates/nuvai-mkl" }
+```
+
+The path must name the directory holding the `Cargo.toml` — here
+`crates/nuvai-mkl`. Unlike a git dependency, Cargo does **not** search a path for
+the package, and the repository root is a virtual workspace with no package to
+depend on, so pointing at the root does not work.
+
+### Choosing a backend
+
+`accelerate` is the default everywhere, but it only *matters* on
+`aarch64-apple-darwin`: on x86_64 Linux/Windows the backend is always Intel oneMKL,
+and on `aarch64-unknown-linux-gnu` it is always OpenBLAS, with both features inert.
+
+```toml
+# Apple Silicon: OpenBLAS for BLAS/LAPACK instead of vecLib (FFT, VML, sparse and
+# VSL still use Accelerate and `rand`).
+nuvai-mkl = { git = "https://github.com/Nuvai/nuvai-mkl", tag = "v0.1.0",
+              default-features = false, features = ["openblas"] }
+```
+
+On `aarch64-apple-darwin` exactly one of the two must be enabled. A build with
+neither (`default-features = false` and no replacement) or with both is a compile
+error by design — the backend is never selected silently (ADR-0003). Cargo
+features are additive across the whole graph, so `default-features = false` is
+what turns `accelerate` off; a feature list that merely omits it does not.
 
 ## Usage
 

@@ -9,6 +9,33 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ### Added
 
+- A per-target assertion that `nuvai_mkl_src::backend()` reports the backend each
+  CI target is supposed to have (issue #11):
+  `crates/nuvai-mkl-src/tests/backend_matrix.rs`. `backend()`'s final arm is a
+  catch-all returning `IntelMkl`, so a target nobody considered did not fail — it
+  quietly claimed Intel MKL and emitted x86_64 link directives for a toolchain
+  that cannot use them. The new test records one expectation per
+  `(target, feature selection)` pair and makes the **absence** of an expectation a
+  compile error, so "explicit, never silent" (ADR-0003) now holds for the target
+  dimension as well as the feature dimension. The two `aarch64-apple-darwin` jobs
+  share a triple and differ only in features, so each arm is guarded with
+  `not(feature = …)` — that is what makes the `--no-default-features --features
+  openblas` job assert `OpenBlas` for real instead of passing on whatever the
+  build happened to pick. The tag published as `cargo:metadata=BACKEND=…` is
+  asserted too, against a restated literal table rather than derived from
+  `backend_tag`, so a change to the mapping is caught rather than mirrored. Being
+  an integration test, its ability to run at all is also #11's "builds + links"
+  criterion: it is a separate binary and cannot execute unless the link directives
+  this crate's build script emitted for the job resolved.
+
+- The `aarch64-darwin-openblas` CI job now runs `cargo clippy` (issue #11), the
+  parity gap #11 named — it was the only one of the five jobs without a lint step.
+  It is also the only lint pass over the `openblas` feature path, which the
+  Accelerate job can never compile (`accelerate` and `openblas` are mutually
+  exclusive on aarch64-apple-darwin, #35). No `-D warnings`, on the same terms as
+  the other four jobs: floating nightly plus new lints would break CI for reasons
+  unrelated to the code.
+
 - Half-precision GEMM: `blas::hgemm` (issue #47), the fp16 counterpart of
   `sgemm`/`dgemm` with the same `Layout`/`Transpose` signature and the same
   `check_gemm_dims` validation before any pointer reaches CBLAS. The buffers are
@@ -370,6 +397,31 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   `fft` module docs carry the same note.
 
 ### Documentation
+
+- The README gained an **Installation** section (issues #12, #6, #1): the crate is
+  not on crates.io and never was, but the public README documented no way to
+  consume it at all — no `cargo add`, no dependency snippet. It now states the
+  internal-distribution model (`ADR-0004`), gives the git and path forms, and
+  records the three things a consumer would otherwise discover by failing: that
+  the workspace needs a matching **nightly** toolchain (`rust-version = "1.99"`,
+  edition 2024, and no `rust-toolchain.toml` to pin one), that a `path`
+  dependency must name `crates/nuvai-mkl` because Cargo does not search a path for
+  a package and the root is a virtual workspace, and that the crate's release tag
+  had to exist for the documented `tag = "v0.1.0"` form to resolve — none had ever
+  been cut.
+
+- `README.md`'s *Backend selection* section no longer claims that enabling both
+  backend features picks the first match and reports it. #35 made that
+  configuration a `compile_error!`; the line described the pre-#35 behaviour and
+  contradicted `backend.rs` directly. The README now says both-features and
+  neither-features are compile errors (ADR-0003).
+
+- `docs-ai/adrs/ADR-0004-internal-distribution.md` records the delivery-channel
+  decision itself. Task #12 was closed `NOT_PLANNED` with no comment at all, which
+  left epic #6's crates.io and docs.rs acceptance criteria unmet while the epic,
+  the #1 roadmap, and the README still assumed a registry release. The ADR states
+  the decision, its rationale, and that the epic criteria are superseded by it —
+  and that a future publish is a new ADR rather than a reopening of #12.
 
 - `acquire.rs`'s `locate` records why its aarch64 panic is unreachable rather
   than caller-facing (issue #39). The issue asked for it to return `Result`

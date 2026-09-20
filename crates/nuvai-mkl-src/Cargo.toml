@@ -22,6 +22,15 @@ default = ["accelerate"]
 accelerate = []
 openblas = []
 
+# Link Intel oneMKL statically instead of via the dynamic runtime dispatcher
+# (`mkl_rt`) — `x86_64-unknown-linux-gnu` only for now (ADR-0005). Off by
+# default: it acquires a much larger conda-forge package (`mkl-static`,
+# ~530 MB uncompressed for `libmkl_core.a` alone, versus a few MB for the
+# dynamic `mkl` package) and produces a correspondingly larger binary. A
+# compile error rejects this on every other target — see `backend.rs` — rather
+# than silently falling back to a dynamic link the caller did not ask for.
+static = []
+
 # There is deliberately no `[dependencies]`. Acquisition runs entirely in
 # `build.rs`, so these are needed only to compile a build script (#24); declaring
 # them here as well put `ureq`/`zip`/`zstd`/`tar`/`sha2` — and their trees,

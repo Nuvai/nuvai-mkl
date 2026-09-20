@@ -180,6 +180,63 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets
 
+  # x86_64 Linux, static (`static` feature — ADR-0005, #68): links Intel
+  # oneMKL's static archives instead of the dynamic `mkl_rt` dispatcher.
+  # Acquires a much larger conda-forge package (`mkl-static`, ~130 MB
+  # compressed) than the dynamic `mkl` package the job above uses, so —
+  # unlike `x86_64-linux`, which is intentionally cold every run to guard
+  # against #64 — this job caches ~/.cache/nuvai-mkl across runs.
+  x86_64-linux-static:
+    name: x86_64-unknown-linux-gnu (Intel MKL, static)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libclang (bindgen)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Install nightly 1.99 toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache the conda-forge MKL static archive acquisition
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/nuvai-mkl
+          key: nuvai-mkl-conda-static-linux-${{ hashFiles('crates/nuvai-mkl-src/src/acquire.rs') }}
+
+      - name: cargo build (static)
+        run: cargo build --workspace --features static
+
+      - name: cargo test (static)
+        run: cargo test --workspace --features static
+
+      - name: cargo clippy (static)
+        run: cargo clippy --workspace --all-targets --features static
+
+      - name: verify no runtime dependency on the dynamic MKL dispatcher
+        # The whole point of `static`: the resulting binary must not link
+        # libmkl_rt.so or libiomp5.so/libomp.so at all (the sequential
+        # threading layer needs no OpenMP runtime — see ADR-0005 decision 4).
+        # `ldd` on any nuvai-mkl test binary is a direct check of that, rather
+        # than trusting the build succeeded for the reason we think it did.
+        run: |
+          bin=$(find target/debug/deps -maxdepth 1 -type f -executable -name 'nuvai_mkl-*' | head -n1)
+          if [ -z "$bin" ]; then
+            echo "::error::no nuvai_mkl test binary found under target/debug/deps"
+            exit 1
+          fi
+          echo "checking $bin"
+          ldd "$bin"
+          if ldd "$bin" | grep -qE 'libmkl_rt|libiomp5|libomp\.so'; then
+            echo "::error::static build still links a dynamic MKL/OpenMP runtime library"
+            ldd "$bin"
+            exit 1
+          fi
+
   # x86_64 Windows MSVC: Intel oneMKL acquired by nuvai-mkl-src at build time
   # (conda-forge download into %USERPROFILE%\.cache\nuvai-mkl — HOME is commonly
   # unset on Windows). The win-64 `mkl` package ships 26 DLLs but no import

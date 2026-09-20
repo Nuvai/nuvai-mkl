@@ -80,6 +80,24 @@ compile_error!(
      (aarch64-unknown-linux-gnu); musl/Android/Windows/FreeBSD aarch64 have no backend."
 );
 
+// `static` (ADR-0005) links Intel oneMKL's archives directly and is only
+// acquired/emitted for `x86_64-unknown-linux-gnu` (`acquire.rs::download_mkl`,
+// `build.rs::emit_intel_mkl`) — there is no `mkl-static`-equivalent static
+// archive for the Windows conda package, and Accelerate/OpenBLAS have no
+// static form to switch to. Reject every other target at compile time rather
+// than let the feature silently fall back to a dynamic link the caller
+// explicitly opted out of. Selection is explicit, never silent (ADR-0003).
+#[cfg(all(
+    feature = "static",
+    not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))
+))]
+compile_error!(
+    "nuvai-mkl-src: the `static` feature is only supported on \
+     x86_64-unknown-linux-gnu — Windows has no static-archive conda package, \
+     and Accelerate/OpenBLAS (the aarch64 fallbacks) have no static form to \
+     switch to. Disable `static` for this target."
+);
+
 /// The link backend selected for the current build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {

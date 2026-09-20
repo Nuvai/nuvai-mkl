@@ -21,6 +21,10 @@ default = ["accelerate"]
 # silently to OpenBLAS, which is the silent selection ADR-0003 forbids.
 accelerate = ["nuvai-mkl-src/accelerate"]
 openblas = ["nuvai-mkl-src/openblas"]
+# Statically link Intel oneMKL instead of linking the dynamic runtime
+# dispatcher (x86_64-unknown-linux-gnu only — ADR-0005). See
+# `nuvai-mkl-src`'s `static` feature doc for what changes and why.
+static = ["nuvai-mkl-src/static"]
 
 [dependencies]
 nuvai-mkl-sys = { workspace = true }

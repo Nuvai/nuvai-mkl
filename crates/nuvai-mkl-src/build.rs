@@ -45,6 +45,22 @@ fn main() {
     let backend = backend_for_target(&target_os, &target_arch, target_env.as_deref())
         .unwrap_or_else(|e| panic!("{e}"));
 
+    // `static` (ADR-0005) is x86_64-unknown-linux-gnu only: no static-archive
+    // conda package exists for Windows, and Accelerate/OpenBLAS have no static
+    // form. The library-target `compile_error!` in `backend.rs` catches this
+    // for the crate itself, but a build script is host-compiled and cannot
+    // `compile_error!` for a *different* target — so cross-compiling
+    // `--target x86_64-pc-windows-msvc --features static` from any host must be
+    // caught here instead, loudly, rather than silently linking dynamically.
+    if wants_static_link() && !(target_os == "linux" && target_arch == "x86_64") {
+        panic!(
+            "nuvai-mkl-src: the `static` feature is only supported on \
+             x86_64-unknown-linux-gnu (target is {target_os}-{target_arch}) — Windows has \
+             no static-archive conda package, and Accelerate/OpenBLAS (the aarch64 \
+             fallbacks) have no static form to switch to. Disable `static` for this target."
+        );
+    }
+
     match backend {
         Backend::IntelMkl => emit_intel_mkl(&target_os),
         Backend::Accelerate => {
@@ -105,6 +121,15 @@ fn emit_intel_mkl(target_os: &str) {
     println!("cargo:rustc-link-search=native={}", info.lib_dir.display());
 
     match target_os {
+        // Static linking (`static` feature — ADR-0005) emits nothing beyond
+        // the `rustc-link-search` above: every `-l`/group directive it needs
+        // is `rustc-link-arg`, which Cargo scopes to the *emitting* package's
+        // own binaries (see the extended note on the OpenBLAS aarch64 rpath
+        // above) — and this crate owns none. `nuvai-mkl/build.rs`, which owns
+        // the actual test/example binaries, emits the group link instead,
+        // reading `info.static_link` back through `MklInfo::from_build_metadata`
+        // the same way it already reads `omp_lib_dir` for the dynamic path.
+        "linux" if info.static_link => {}
         "linux" => {
             println!("cargo:rustc-link-lib=dylib=mkl_rt");
             println!("cargo:rustc-link-lib=dylib=dl");
@@ -158,4 +183,14 @@ fn emit_intel_mkl(target_os: &str) {
         println!("cargo::metadata=DLL_DIR_{i}={}", dll_dir.display());
     }
     println!("cargo::metadata=VERSION={}", MKL_VERSION);
+    // Read back by `nuvai-mkl-sys`/`nuvai-mkl`'s build scripts. `nuvai-mkl`'s
+    // reads this to decide whether to emit the static group-link itself (see
+    // the long comment on `emit_intel_mkl_static` in that crate's `build.rs`
+    // for why it — not this crate — has to be the one to emit it), and to
+    // skip the dynamic-only linker tricks (rpath, `force_runtime.c`) that a
+    // static archive link neither needs nor has any use for.
+    println!(
+        "cargo::metadata=STATIC_LINK={}",
+        if info.static_link { "1" } else { "0" }
+    );
 }

@@ -22,6 +22,10 @@ build = "build.rs"
 default = ["accelerate"]
 accelerate = ["nuvai-mkl-src/accelerate"]
 openblas = ["nuvai-mkl-src/openblas"]
+# Forward static linking (x86_64-unknown-linux-gnu only — ADR-0005) to
+# `nuvai-mkl-src`, the sole acquirer/emitter. See that crate's `static`
+# feature doc for what this does and does not affect on other targets.
+static = ["nuvai-mkl-src/static"]
 
 [dependencies]
 nuvai-mkl-src = { workspace = true }

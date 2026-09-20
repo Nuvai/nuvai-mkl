@@ -308,6 +308,18 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   (`row_index.len() == n + 1`, `values.len() == columns.len()`) are now
   debug-asserted. Flagged as a follow-up at the bottom of PR #59.
 
+- `nuvai-mkl`'s `build.rs` now surfaces the macOS 12.0 deployment-target
+  requirement its `aarch64-apple-darwin` arm has always had (issue #32). The
+  interleaved vDSP DFT the FFT backend can select is
+  `API_AVAILABLE(macos(12.0))`, and the build script's `cargo:rustc-env=
+  MACOSX_DEPLOYMENT_TARGET=12.0` only reaches `nuvai-mkl`'s own
+  test/example/bench binaries — it cannot set a downstream consumer's
+  deployment target, so a binary that links `nuvai-mkl` without setting that
+  variable itself would abort at load with "Symbol not found" on macOS
+  10.15/11, with nothing in the build output to explain why. The build script
+  now also emits a `cargo:warning` naming the requirement and the fix, and the
+  `fft` module docs carry the same note.
+
 ### Documentation
 
 - `acquire.rs`'s `locate` records why its aarch64 panic is unreachable rather

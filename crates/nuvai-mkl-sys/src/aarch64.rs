@@ -4,9 +4,10 @@
 // cannot generate bindings from the oneMKL headers on this target. Instead
 // this module declares the small, bounded set of C symbols the fallback
 // backends call — Accelerate's CBLAS, the Fortran LAPACK `_` entry points,
-// the vDSP DFT routines, the vForce vector-math routines, and the
-// Sparse/SparseSolve direct solvers — directly against the Accelerate
-// framework. The Intel x86_64 bindgen output is untouched.
+// the vDSP DFT routines, the vDSP vector-arithmetic routines, the vForce
+// vector-math routines, and the Sparse/SparseSolve direct solvers — directly
+// against the Accelerate framework. The Intel x86_64 bindgen output is
+// untouched.
 //
 // The CBLAS symbols are re-exported under the *same names* as the Intel
 // bindgen output because both MKL and Accelerate implement the netlib CBLAS
@@ -50,6 +51,9 @@ include!("netlib_abi.rs");
 
 /// `unsigned long` — 8 bytes on LP64.
 pub type vDSP_Length = c_ulong;
+/// `long` — the stride type of the `vDSP_v*` vector routines (8 bytes on LP64,
+/// and *signed*, unlike `vDSP_Length`).
+pub type vDSP_Stride = c_long;
 /// DFT direction (`vDSP_ENUM(int, vDSP_DFT_Direction)`).
 pub type vDSP_DFT_Direction = c_int;
 
@@ -439,6 +443,137 @@ unsafe extern "C" {
     pub fn vvacos(y: *mut f64, x: *const f64, n: *const c_int);
     pub fn vvatanf(y: *mut f32, x: *const f32, n: *const c_int);
     pub fn vvatan(y: *mut f64, x: *const f64, n: *const c_int);
+    pub fn vvtanhf(y: *mut f32, x: *const f32, n: *const c_int);
+    pub fn vvtanh(y: *mut f64, x: *const f64, n: *const c_int);
+
+    // --- vDSP vector arithmetic (`(A, IA, B, IB, C, IC, N)` order) ---
+    //
+    // Element-wise binary and squaring routines for the VML surface (#48, #49).
+    // vForce carries only *one* of the six binary operations VML exposes
+    // (`vvdivf`/`vvdiv`) and has no squaring function at all — its 84 `vv*`
+    // symbols are unary transcendentals plus `vvpow`/`vvfmod`/`vvremainder`/
+    // `vvatan2`/`vvcopysign`/`vvnextafter` — so the Apple Silicon backend for
+    // these maps to vDSP, which covers all seven uniformly, rather than mixing
+    // a single vForce call into a vDSP-shaped family.
+    //
+    // `vDSP_vsub` and `vDSP_vdiv` are declared with their two input pointers
+    // *swapped* relative to their names, and the SDK header says so explicitly
+    // ("Caution: A and B are swapped!"). Both compute `A op B` where `A` is the
+    // **second** input argument, so a caller wanting `a - b` passes
+    // `(b, 1, a, 1, r, 1, n)`. The safe wrapper compensates; these declarations
+    // reproduce the C ABI verbatim.
+    pub fn vDSP_vadd(
+        a: *const f32,
+        ia: vDSP_Stride,
+        b: *const f32,
+        ib: vDSP_Stride,
+        c: *mut f32,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vaddD(
+        a: *const f64,
+        ia: vDSP_Stride,
+        b: *const f64,
+        ib: vDSP_Stride,
+        c: *mut f64,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vsub(
+        b: *const f32,
+        ib: vDSP_Stride,
+        a: *const f32,
+        ia: vDSP_Stride,
+        c: *mut f32,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vsubD(
+        b: *const f64,
+        ib: vDSP_Stride,
+        a: *const f64,
+        ia: vDSP_Stride,
+        c: *mut f64,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vmul(
+        a: *const f32,
+        ia: vDSP_Stride,
+        b: *const f32,
+        ib: vDSP_Stride,
+        c: *mut f32,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vmulD(
+        a: *const f64,
+        ia: vDSP_Stride,
+        b: *const f64,
+        ib: vDSP_Stride,
+        c: *mut f64,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vdiv(
+        b: *const f32,
+        ib: vDSP_Stride,
+        a: *const f32,
+        ia: vDSP_Stride,
+        c: *mut f32,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vdivD(
+        b: *const f64,
+        ib: vDSP_Stride,
+        a: *const f64,
+        ia: vDSP_Stride,
+        c: *mut f64,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vmax(
+        a: *const f32,
+        ia: vDSP_Stride,
+        b: *const f32,
+        ib: vDSP_Stride,
+        c: *mut f32,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vmaxD(
+        a: *const f64,
+        ia: vDSP_Stride,
+        b: *const f64,
+        ib: vDSP_Stride,
+        c: *mut f64,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vmin(
+        a: *const f32,
+        ia: vDSP_Stride,
+        b: *const f32,
+        ib: vDSP_Stride,
+        c: *mut f32,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    pub fn vDSP_vminD(
+        a: *const f64,
+        ia: vDSP_Stride,
+        b: *const f64,
+        ib: vDSP_Stride,
+        c: *mut f64,
+        ic: vDSP_Stride,
+        n: vDSP_Length,
+    );
+    /// `C[i] = A[i] * A[i]` — the squaring routine VML's `vsSqr`/`vdSqr` maps
+    /// to (#49). vForce has no squaring function.
+    pub fn vDSP_vsq(a: *const f32, ia: vDSP_Stride, c: *mut f32, ic: vDSP_Stride, n: vDSP_Length);
+    pub fn vDSP_vsqD(a: *const f64, ia: vDSP_Stride, c: *mut f64, ic: vDSP_Stride, n: vDSP_Length);
 
     // --- Sparse direct solvers ---
     pub fn _SparseFactorSymmetric_Double(

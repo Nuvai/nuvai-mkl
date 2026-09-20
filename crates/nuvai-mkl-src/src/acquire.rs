@@ -51,8 +51,8 @@ const WIN_LLVM_OPENMP: &str = "llvm-openmp-22.1.8-h4fa8253_0.conda";
 const WIN_TBB: &str = "tbb-2021.10.0-h91493d7_2.conda";
 
 // SHA-256 of each pinned conda-forge package (from api.anaconda.org/dist).
-// Pinning the digest lets `download()` reject a tampered or corrupted archive
-// before it is extracted into the linker search path.
+// Pinning the digest lets `verify_sha256` reject a tampered or corrupted
+// archive before it is extracted into the linker search path.
 //
 // The pinned filenames and digests must stay in *this* file: CI keys its
 // conda-download cache on `.github/workflows/ci.yml`'s `hashFiles` of this

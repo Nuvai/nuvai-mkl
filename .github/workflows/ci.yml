@@ -92,6 +92,17 @@ jobs:
       - name: cargo test (openblas)
         run: cargo test --target aarch64-apple-darwin --workspace --no-default-features --features openblas
 
+      - name: cargo clippy (openblas)
+        # The parity gap #11 closed: this was the only one of the five jobs with
+        # no clippy step. It is also the only lint pass over the `openblas`
+        # feature path — the Accelerate job can never compile it, since
+        # `accelerate` and `openblas` are mutually exclusive on
+        # aarch64-apple-darwin (#35).
+        #
+        # No `-D warnings`, on the same terms as the other four jobs: floating
+        # nightly + new lints = CI breaks unrelated to the code.
+        run: cargo clippy --target aarch64-apple-darwin --workspace --all-targets --no-default-features --features openblas
+
   # ARM64 Linux: OpenBLAS is the sole backend (BLAS/LAPACK only; FFT/VML/VSL/
   # sparse/PARDISO/DSS return ErrorKind::Unsupported). The runner is ARM64 so
   # aarch64-unknown-linux-gnu is the native host target. bindgen is gated off on

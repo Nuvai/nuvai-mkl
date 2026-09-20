@@ -3,6 +3,12 @@
 - **Status:** Accepted
 - **Date:** 2026-09-21
 - **Task:** #68 — evaluate/support static linking of oneMKL (Linux x86_64 first)
+- **Amended by:** ADR-0006 (#70) — decisions 5 and 6 below, where the group link
+  is emitted from `nuvai-mkl/build.rs` as a `rustc-link-arg`. It now propagates
+  from `nuvai-mkl-src` as a linker script, because a link-argument reaches only
+  the emitting package's own binaries and so failed to link in any crate that
+  merely depended on `nuvai-mkl`. The link *recipe* (the three archives, the
+  `mkl_sequential` threading layer, the group semantics) is unchanged.
 - **Deciders:** nuvai-mkl maintainers
 
 ## Context

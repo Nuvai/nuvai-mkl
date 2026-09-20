@@ -237,6 +237,51 @@ jobs:
             exit 1
           fi
 
+  # x86_64 Linux, consumed from *outside* the workspace (#70). Every other job
+  # here builds this repository's own targets, and Cargo scopes a build script's
+  # `rustc-link-arg` to the emitting package's own targets — so a whole class of
+  # breakage in which both link paths worked here and neither worked for a crate
+  # that merely depended on `nuvai-mkl` passed every one of them. These two
+  # fixtures are the missing check: separate workspaces, depending on
+  # `crates/nuvai-mkl` by path, each building and *running* a binary.
+  #
+  # `dependency-only` declares no link plumbing at all and must work under
+  # `static` (the fix); `build-script-helper` covers the dynamic path, where an
+  # executable's rpath cannot be emitted by anything but its own build script,
+  # and re-runs under `static`, where that same call emits nothing.
+  x86_64-linux-downstream:
+    name: x86_64-unknown-linux-gnu (downstream consumers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libclang (bindgen)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Install nightly 1.99 toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Both the dynamic `mkl` package and the ~130 MB `mkl-static` one, since
+      # the three runs below cross between them. Same key shape as the static
+      # job above, and same invalidation: a change to the acquisition is what
+      # changes which archives are fetched.
+      - name: Cache the conda-forge MKL acquisition
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/nuvai-mkl
+          key: nuvai-mkl-conda-consumers-linux-${{ hashFiles('crates/nuvai-mkl-src/src/acquire.rs') }}
+
+      - name: dependency-only consumer, static — no build script, nothing configured
+        run: cargo run --manifest-path consumers/dependency-only/Cargo.toml
+
+      - name: build-script-helper consumer, dynamic
+        run: cargo run --manifest-path consumers/build-script-helper/Cargo.toml
+
+      - name: build-script-helper consumer, static — the same call emits nothing
+        run: cargo run --manifest-path consumers/build-script-helper/Cargo.toml --features static
+
   # x86_64 Windows MSVC: Intel oneMKL acquired by nuvai-mkl-src at build time
   # (conda-forge download into %USERPROFILE%\.cache\nuvai-mkl — HOME is commonly
   # unset on Windows). The win-64 `mkl` package ships 26 DLLs but no import

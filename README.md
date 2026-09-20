@@ -123,7 +123,53 @@ form to switch to.
 - First build downloads ~140 MB of MKL into `~/.cache/nuvai-mkl/` (cached thereafter; on Windows the cache falls back to `%USERPROFILE%\.cache\nuvai-mkl` since `HOME` is often unset, and the acquisition also fetches `mkl-devel`, `llvm-openmp` and `tbb`).
 - `libclang` + `bindgen` for regenerating FFI bindings on Intel targets (LLVM on Windows, `libclang-dev` on Linux). The ARM64 aarch64 targets use a hand-written FFI surface and need no libclang.
 - On `aarch64-apple-darwin`, **macOS 12.0+** is required: the FFT backend uses vDSP's interleaved-complex DFT (`vDSP_DFT_Interleaved_*`), which is `API_AVAILABLE(macos(12.0))`.
-- On `aarch64-unknown-linux-gnu`, OpenBLAS is the sole backend: install `libopenblas-dev` (system default search path), or point `OPENBLAS_ROOT` at a conda/pip install — `nuvai-mkl-src` adds its `lib` dir to the propagated link-search path, and the workspace's own test/example binaries get the matching runtime rpath via `nuvai-mkl`'s build script (`cargo:rustc-link-arg` only applies to the emitting crate's own targets, so downstream crates linking a non-system OpenBLAS must set their own rpath).
+- On `aarch64-unknown-linux-gnu`, OpenBLAS is the sole backend: install `libopenblas-dev` (system default search path), or point `OPENBLAS_ROOT` at a conda/pip install — `nuvai-mkl-src` adds its `lib` dir to the propagated link-search path, and `nuvai_mkl_src::emit_binary_link_args()` supplies the matching runtime rpath wherever the binary is linked from (see [Linking from another crate](#linking-from-another-crate)).
+
+## Linking from another crate
+
+Everything `nuvai-mkl-src` can express as a link *library* or a *search path*
+propagates to a dependent's binaries on its own — on `static` that includes the
+group link over Intel's archives, which is why a plain dependency is enough.
+What cannot propagate is an executable's **runtime rpath** and the object that
+keeps the OpenMP runtime in its `DT_NEEDED` under `mold` (#44): Cargo scopes
+`cargo:rustc-link-arg` to the targets of the package that emits it, and no
+directive can put an rpath on another package's binary (ADR-0006). The two link
+modes therefore differ:
+
+| Link mode | What a depending crate needs |
+|---|---|
+| `static` | **nothing.** `nuvai-mkl = { …, features = ["static"] }` links and runs |
+| dynamic (default) | the two manifest entries below, plus one line of `build.rs` |
+
+```toml
+[dependencies]
+nuvai-mkl = { git = "https://github.com/Nuvai/nuvai-mkl", tag = "v0.1.0" }
+# For the DEP_MKL_* metadata the build script below reads. Cargo forwards a
+# `links` provider's metadata through this table only — a [build-dependencies]
+# entry on its own receives none of it (ADR-0006).
+nuvai-mkl-src = { git = "https://github.com/Nuvai/nuvai-mkl", tag = "v0.1.0" }
+
+[build-dependencies]
+# The same crate again: a build script can only use code from this table.
+nuvai-mkl-src = { git = "https://github.com/Nuvai/nuvai-mkl", tag = "v0.1.0" }
+```
+
+```rust
+// build.rs
+fn main() {
+    nuvai_mkl_src::emit_binary_link_args();
+}
+```
+
+Without that call the binary links and then fails at start-up with
+`libmkl_rt.so.3: cannot open shared object file`. Putting the MKL directories on
+`LD_LIBRARY_PATH` (or `PATH` on Windows) wherever the binary runs is the
+alternative, and is what consumers had to do before.
+
+Both modes are exercised end to end by the crates in
+[`consumers/`](consumers/README.md) — a *separate* workspace, because the
+distinction is between packages — and by the `x86_64-linux-downstream` CI job,
+which builds and runs a downstream binary against this repository's crates.
 
 ## Installation
 

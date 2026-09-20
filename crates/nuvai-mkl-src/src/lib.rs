@@ -16,6 +16,34 @@
 //! backend (`mkl_rt` on Intel, `-framework Accelerate`/`-lopenblas` on Apple
 //! Silicon, `-lopenblas` on Linux aarch64).
 //!
+//! ## Consuming this backend from your own crate
+//!
+//! Cargo propagates `cargo:rustc-link-lib`/`cargo:rustc-link-search` from a
+//! build script to every link that depends on the emitting package, but
+//! **not** `cargo:rustc-link-arg` — that one applies to the emitting package's
+//! own targets. Everything this crate emits is therefore of the propagating
+//! kind, which is what lets a plain dependency-only consumer link *and* run.
+//! The exceptions are the arguments only the owner of a binary can supply — an
+//! executable's runtime rpath, and the object that keeps the OpenMP runtime in
+//! its DT_NEEDED against mold (#44) — and those are emitted from your own
+//! `build.rs` by [`emit_binary_link_args`]:
+//!
+//! ```toml
+//! [build-dependencies]
+//! nuvai-mkl-src = { git = "…", rev = "…" }   # the revision nuvai-mkl resolves to
+//! ```
+//!
+//! ```no_run
+//! #![allow(clippy::needless_doctest_main)] // a build.rs really does have a `main`
+//! fn main() {
+//!     nuvai_mkl_src::emit_binary_link_args();
+//! }
+//! ```
+//!
+//! With the `static` feature it emits nothing — a statically linked binary has
+//! no shared object to point an rpath at — so a static consumer needs no build
+//! script and no build-dependency at all (#70).
+//!
 //! The acquisition above happens in the **build script**, not in this library:
 //! it needs `ureq`/`zip`/`zstd`/`tar`/`sha2`, which are build-dependencies so
 //! that they stay out of the runtime graph of every downstream build (#24). A
@@ -38,5 +66,11 @@
 // `build.rs`, which includes both files; what the library exposes here is the
 // version, the `MklInfo` shape, and the reader that rebuilds one from the
 // metadata that build script published.
+//
+// `link_args.rs` is the one other module the build script does *not* include:
+// it is the entry point a *dependent's* build script calls (#70), so it has to
+// be compiled into this crate's library target — `nuvai-mkl/build.rs` is its
+// first caller, and a downstream consumer's `build.rs` is the second.
 include!("mkl_info.rs");
 include!("backend.rs");
+include!("link_args.rs");

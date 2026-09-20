@@ -7,6 +7,20 @@
 //! The Intel x86_64 path is byte-identical to the pre-fallback behaviour and is
 //! selected by [`backend_for_target`].
 //!
+//! This crate owns no binaries, which decides what it can emit. Cargo applies
+//! `cargo:rustc-link-lib` / `cargo:rustc-link-search` to every link that
+//! depends on the emitting package, but scopes `cargo:rustc-link-arg` to that
+//! package's *own* targets — so everything a downstream binary needs has to be
+//! expressed here as a library or a search path, and that is now true of every
+//! oneMKL directive including the static group link, which is a linker script
+//! reached through `-l` (#70). The arguments that genuinely cannot be
+//! expressed that way — an executable's runtime rpath, and the object that
+//! keeps the OpenMP runtime in its DT_NEEDED against mold (#44) — are emitted
+//! by whoever owns the binary, through `nuvai_mkl_src::emit_binary_link_args`
+//! (see `src/link_args.rs`). The one exception here is this crate's own
+//! `tests/`, whose binaries *are* this package's targets: they get their
+//! OpenBLAS rpath directly from the aarch64 arm below.
+//!
 //! Build scripts compile for and run on the *host*, so `#[cfg(...)]` here would
 //! describe the host, not the crate being built. The backend is therefore
 //! selected from the target triple Cargo exposes as `CARGO_CFG_TARGET_OS` /
@@ -15,7 +29,8 @@
 //! would select `IntelMkl` and emit x86_64 MKL directives for an ARM target.
 
 // `mkl_info.rs` first: `acquire.rs` relies on the `env`/`Path`/`PathBuf`
-// imports it declares, since both share this script's module.
+// imports it declares, since both share this script's module — which is also
+// where `fs` (from `acquire.rs`) comes from.
 include!("src/mkl_info.rs");
 include!("src/acquire.rs");
 include!("src/backend.rs");
@@ -98,9 +113,10 @@ fn main() {
             //
             // The runtime *rpath* is deliberately not emitted here:
             // `cargo:rustc-link-arg` only applies to the emitting package's own
-            // targets, and this crate owns no binaries — the crate that owns the
-            // test/example binaries (`nuvai-mkl/build.rs`) emits the rpath
-            // instead. macOS needs none anyway: the Homebrew dylib carries an
+            // targets, and this crate owns no binaries — whoever owns the
+            // binary emits it, through
+            // `nuvai_mkl_src::emit_binary_link_args` (see `src/link_args.rs`,
+            // #70). macOS needs none anyway: the Homebrew dylib carries an
             // absolute install_name.
             let aarch64_fallback =
                 (target_os == "linux" && target_arch == "aarch64") || target_os == "macos";
@@ -120,16 +136,59 @@ fn emit_intel_mkl(target_os: &str) {
 
     println!("cargo:rustc-link-search=native={}", info.lib_dir.display());
 
+    // The one build artifact a *dependent's* build script needs a path to
+    // rather than a copy of: compiled below for the dynamic Linux arm, and
+    // published as `DEP_MKL_FORCE_OBJ` at the end of this function.
+    let mut force_obj: Option<PathBuf> = None;
+
     match target_os {
-        // Static linking (`static` feature — ADR-0005) emits nothing beyond
-        // the `rustc-link-search` above: every `-l`/group directive it needs
-        // is `rustc-link-arg`, which Cargo scopes to the *emitting* package's
-        // own binaries (see the extended note on the OpenBLAS aarch64 rpath
-        // above) — and this crate owns none. `nuvai-mkl/build.rs`, which owns
-        // the actual test/example binaries, emits the group link instead,
-        // reading `info.static_link` back through `MklInfo::from_build_metadata`
-        // the same way it already reads `omp_lib_dir` for the dynamic path.
-        "linux" if info.static_link => {}
+        // Static linking (`static` feature — ADR-0005) has nothing to express
+        // as a `-l` per archive: `libmkl_intel_lp64.a`, `libmkl_sequential.a`
+        // and `libmkl_core.a` resolve symbols *circularly* — `mkl_core` calls
+        // back into the interface and threading layers — so no linear order of
+        // three separate libraries resolves, which is what a single-pass
+        // linker command is. `--start-group`/`--end-group` is the documented
+        // remedy, and it cannot be spelled as `rustc-link-lib`…
+        //
+        // …but a *linker script* can, and a linker script is just a `-l`
+        // input: `GROUP ( a b c )` is the same repeated rescan semantics
+        // written into a file, so `-lnuvai_mkl_static_group` carries it
+        // through the propagating directive that reaches every dependent
+        // (#70). Before this, the group was a `rustc-link-arg` emitted by
+        // `nuvai-mkl` — which owns binaries, so it worked for the workspace's
+        // own tests, and reached nothing in a crate that merely depended on
+        // `nuvai-mkl`: acquisition and the search path both succeeded, and
+        // every downstream link failed with undefined MKL symbols.
+        //
+        // `pthread`/`dl`/`m` — which `mkl_core` calls into — are deliberately
+        // *not* named here. `rustc` already emits them on the tail of every
+        // Linux link line, after the libraries, which is the order static
+        // resolution requires; naming them again would only guarantee a
+        // second, differently-ordered mention.
+        "linux" if info.static_link => {
+            // Written into `OUT_DIR`, which is stable for the whole build and
+            // is where a build script may write. The `rustc-link-search` below
+            // is a propagating directive, so a dependent's linker finds the
+            // script at the same path this crate's own build does.
+            let dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set"));
+            write_static_group_script(&info, &dir);
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            // `-bundle` is load-bearing, not a style choice. A `-l static=…`
+            // directive defaults to *bundle*, which asks rustc to fold the
+            // library into this crate's rlib so dependents need not find it
+            // themselves — and rustc does that by opening the file and reading
+            // it as an archive. A linker script is not one, and the build dies
+            // at that point with "failed to add native library
+            // …/libnuvai_mkl_static_group.a: Unsupported archive identifier".
+            // (`+verbatim`, which skips resolving the name against the search
+            // path, does not help — the read is for bundling, not for the
+            // lookup.) With bundling off, rustc passes the library through to
+            // the linker unexamined, which is what makes a text-file `-l` input
+            // — the mechanism glibc's own `libc.so`/`libm.so` scripts use —
+            // usable here at all. Verified against this crate as a library with
+            // a downstream binary and against `mold` (#70).
+            println!("cargo:rustc-link-lib=static:-bundle={STATIC_GROUP_LIB}");
+        }
         "linux" => {
             println!("cargo:rustc-link-lib=dylib=mkl_rt");
             println!("cargo:rustc-link-lib=dylib=dl");
@@ -138,8 +197,25 @@ fn emit_intel_mkl(target_os: &str) {
             if let Some(omp) = &info.omp_lib_dir {
                 println!("cargo:rustc-link-search=native={}", omp.display());
                 println!("cargo:rustc-link-lib=dylib=iomp5");
+                // Only emitted with the runtime it references on the link line:
+                // the object's whole purpose is to leave `omp_*` undefined so
+                // `libiomp5` is kept (see `force_runtime.c`), and emitted
+                // without `-liomp5` — which is what a system oneAPI install
+                // publishes no `omp_lib_dir` for — it would be an undefined
+                // symbol nothing on the line could resolve.
+                force_obj = force_runtime_object();
             }
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", info.lib_dir.display());
+            // The runtime rpath is deliberately *not* emitted here:
+            // `cargo:rustc-link-arg` only applies to the emitting package's
+            // own targets, and this crate owns none. The crate that owns a
+            // binary emits it — `nuvai-mkl/build.rs` for the workspace's
+            // binaries, `nuvai_mkl_src::emit_binary_link_args` for a
+            // downstream consumer's (#70).
+            //
+            // `force_runtime.c` is compiled here rather than by whoever links
+            // it because its *path* has to reach their build script, and
+            // `cargo::metadata` — published below, from this crate's `links =
+            // "mkl"` key — is the only channel that does.
         }
         "windows" => {
             // conda win-64 `mkl` ships 26 DLLs but zero import libs; `mkl-devel`
@@ -183,14 +259,76 @@ fn emit_intel_mkl(target_os: &str) {
         println!("cargo::metadata=DLL_DIR_{i}={}", dll_dir.display());
     }
     println!("cargo::metadata=VERSION={}", MKL_VERSION);
-    // Read back by `nuvai-mkl-sys`/`nuvai-mkl`'s build scripts. `nuvai-mkl`'s
-    // reads this to decide whether to emit the static group-link itself (see
-    // the long comment on `emit_intel_mkl_static` in that crate's `build.rs`
-    // for why it — not this crate — has to be the one to emit it), and to
-    // skip the dynamic-only linker tricks (rpath, `force_runtime.c`) that a
-    // static archive link neither needs nor has any use for.
+    // Read back by the `nuvai-mkl-src`-dependent build scripts, which branch on
+    // it to skip the dynamic-only linker tricks (rpath, `force_runtime.c`) that
+    // a static archive link neither needs nor has any use for. The static group
+    // link itself is *not* among them: it propagates from this build script as
+    // a `-l` input, so a dependent is linked by the same directive this crate's
+    // own build scripts emit (#70).
     println!(
         "cargo::metadata=STATIC_LINK={}",
         if info.static_link { "1" } else { "0" }
     );
+    if let Some(obj) = &force_obj {
+        println!("cargo::metadata=FORCE_OBJ={}", obj.display());
+    }
+}
+
+/// The `-l` name of the generated static group's linker script: `-lnuvai_mkl_static_group`
+/// resolves to `libnuvai_mkl_static_group.a`.
+const STATIC_GROUP_LIB: &str = "nuvai_mkl_static_group";
+
+/// The linker script that makes Intel's three static archives resolve as one
+/// group, as a `-l` input Cargo propagates to dependents (#70, ADR-0005).
+///
+/// `GROUP` is not a convenience: the three archives resolve symbols
+/// *circularly*, so whichever is listed last in a linear order still has
+/// unresolved references into one listed earlier. `GROUP` tells the linker to
+/// re-scan its members until nothing new resolves — the same semantics as
+/// `--start-group`/`--end-group`, and the recipe Intel's own link-line advisor
+/// prescribes for MKL. Absolute paths, because the script is read from
+/// `OUT_DIR` rather than from the archives' directory.
+///
+/// Verified against both `ld` and `mold` (#70): each parses a `-l` input by its
+/// contents, so a linker script reached through `-l` works exactly as a bare
+/// `-Wl,--start-group,…` argument did — while propagating to dependents, which
+/// an argument cannot.
+fn static_group_script(info: &MklInfo) -> String {
+    let lib = info.lib_dir.display();
+    format!("GROUP ( {lib}/libmkl_intel_lp64.a {lib}/libmkl_sequential.a {lib}/libmkl_core.a )\n")
+}
+
+/// Write the group script into `OUT_DIR` and return its path.
+fn write_static_group_script(info: &MklInfo, dir: &Path) -> PathBuf {
+    let path = dir.join(format!("lib{STATIC_GROUP_LIB}.a"));
+    if let Err(e) = fs::write(&path, static_group_script(info)) {
+        panic!("nuvai-mkl-src: cannot write {}: {e}", path.display());
+    }
+    path
+}
+
+/// Compile `build/force_runtime.c`, for the dynamic `x86_64-unknown-linux-gnu`
+/// link only, and return the object path.
+///
+/// The object is what keeps `libm`/`libiomp5` in the executable's DT_NEEDED
+/// under mold: `-l` flags cannot, because mold records `-l` inputs by resolved
+/// file and discards a repeat mention before consulting `--no-as-needed`
+/// (#44). It is compiled *here* rather than by each linker because only this
+/// crate's `links = "mkl"` metadata can hand a path to a dependent's build
+/// script, and because compiling it once means every consumer — the wrapper's
+/// own test binaries and a downstream crate's alike — uses the same object
+/// instead of a second compilation of the same translation unit (#70).
+fn force_runtime_object() -> Option<PathBuf> {
+    let source = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
+        .join("build/force_runtime.c");
+    println!("cargo:rerun-if-changed={}", source.display());
+    // `compile_intermediates` rather than `compile`: the resulting archive
+    // would only be pulled in if something referenced a symbol it *defines*,
+    // and this object exists for the symbols it leaves undefined — so the
+    // object is passed to the linker as a regular input instead.
+    cc::Build::new()
+        .file(&source)
+        .compile_intermediates()
+        .into_iter()
+        .next()
 }

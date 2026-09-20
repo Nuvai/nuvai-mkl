@@ -1,5 +1,8 @@
 # Rust build artifacts
 /target
+# The consumer fixtures under `consumers/` are workspaces of their own, so their
+# target dirs are not the one above.
+**/target/
 **/*.rs.bk
 Cargo.lock
 

@@ -107,7 +107,10 @@ fn main() {
                 // in the library target, so this is the only way to reach them.
                 let info = nuvai_mkl_src::MklInfo::from_build_metadata().expect(
                     "nuvai-mkl-src published no DEP_MKL_* metadata — it must stay in this \
-                     crate's [build-dependencies] for Cargo to forward it",
+                     crate's [dependencies] for Cargo to forward it, since the metadata \
+                     travels through a normal dependency edge only (#70). The \
+                     [build-dependencies] entry is needed as well, for the MklInfo reader \
+                     this script calls",
                 );
                 // The published paths are a snapshot that nothing re-derives
                 // when `~/.cache/nuvai-mkl` is cleared, so check rather than let

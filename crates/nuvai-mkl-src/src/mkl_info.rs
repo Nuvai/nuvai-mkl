@@ -58,6 +58,21 @@ pub struct MklInfo {
     /// because the static link uses the `mkl_sequential` threading layer, which
     /// has no OpenMP dependency at all).
     pub static_link: bool,
+    /// The compiled `build/force_runtime.c` object, for the one link in which
+    /// it is needed: the **dynamic** `x86_64-unknown-linux-gnu` path, where it
+    /// is what keeps `libm`/`libiomp5` in the executable's DT_NEEDED under mold
+    /// (#44, and the file's own comment). `None` everywhere else — the static
+    /// path needs no OpenMP runtime at all (ADR-0005 decision 4), and the
+    /// Windows/aarch64 targets do not use the trick.
+    ///
+    /// A build artifact of this crate's build script rather than a property of
+    /// the install, unlike every other field: it is carried here because the
+    /// `links = "mkl"` metadata channel is the only way to hand a path to a
+    /// *dependent's* build script (#24, #70), and that is what makes the
+    /// per-binary link arguments a downstream consumer needs reachable from
+    /// `nuvai_mkl_src::emit_binary_link_args` without a second compilation of
+    /// the same translation unit in every consumer.
+    pub force_obj: Option<PathBuf>,
 }
 
 impl MklInfo {
@@ -126,12 +141,19 @@ impl MklInfo {
         // default, not just a placeholder, since those are exactly the builds
         // that are not statically linked.
         let static_link = lookup("DEP_MKL_STATIC_LINK").as_deref() == Some("1");
+        // Absent on every target but the dynamic x86_64 Linux one, where it is
+        // the compiled `force_runtime.c` object (#70). Optional for the same
+        // reason as `static_link`: a build published before this field existed
+        // must still parse, and the only caller that needs it — the dynamic
+        // Linux path — publishes it.
+        let force_obj = lookup("DEP_MKL_FORCE_OBJ").map(PathBuf::from);
         Some(Self {
             include_dir,
             lib_dir,
             omp_lib_dir,
             dll_dirs,
             static_link,
+            force_obj,
         })
     }
 }
@@ -161,6 +183,8 @@ mod mkl_info_tests {
             ("DEP_MKL_DLL_DIR_COUNT", "2"),
             ("DEP_MKL_DLL_DIR_0", "/mkl/Library/bin"),
             ("DEP_MKL_DLL_DIR_1", "/omp/Library/bin"),
+            ("DEP_MKL_STATIC_LINK", "0"),
+            ("DEP_MKL_FORCE_OBJ", "/out/force_runtime.o"),
         ])
         .expect("all required variables present");
 
@@ -181,7 +205,11 @@ mod mkl_info_tests {
             Some(Path::new("/mkl/Library/bin")),
             "the first published directory is the primary one"
         );
-        assert!(!info.static_link, "absent DEP_MKL_STATIC_LINK means dynamic");
+        assert!(!info.static_link, "an explicit \"0\" is a dynamic build");
+        assert_eq!(
+            info.force_obj,
+            Some(PathBuf::from("/out/force_runtime.o"))
+        );
     }
 
     /// The required keys are required: a build script that saw only part of the
@@ -229,6 +257,11 @@ mod mkl_info_tests {
         assert_eq!(info.omp_lib_dir, None);
         assert!(info.dll_dirs().is_empty());
         assert_eq!(info.dll_dir(), None);
+        // Absent `DEP_MKL_STATIC_LINK` is a dynamic build and absent
+        // `DEP_MKL_FORCE_OBJ` is a link with no retention object — both are the
+        // pre-#70 published shape, which must keep parsing.
+        assert!(!info.static_link);
+        assert_eq!(info.force_obj, None);
     }
 
     /// `DEP_MKL_STATIC_LINK` (`static` feature — ADR-0005) is published only

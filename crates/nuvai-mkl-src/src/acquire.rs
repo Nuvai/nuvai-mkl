@@ -266,10 +266,62 @@ fn fetch_and_extract_conda(file: &str, sha256: &str, pkg_dir: &Path) -> PathBuf 
     }
     let out = pkg_dir.join(file.trim_end_matches(".conda"));
     if !out.exists() {
-        fs::create_dir_all(&out).expect("create conda extract dir");
-        extract_conda(&dest, &out);
+        extract_conda_atomic(&dest, &out);
     }
     out
+}
+
+/// Extract `archive` to `out`, atomically against the second build script that
+/// shares `out`'s parent directory.
+///
+/// `nuvai-mkl-src` runs as both a `[dependencies]` and a `[build-dependencies]`
+/// unit, so two build scripts race this extraction the same way [`staging_path`]
+/// documents for the download. A bare `out.exists()` guard is not safe here: a
+/// directory populated by `tar.unpack` exists from the moment its first entry is
+/// written, long before the payload is complete, so the second unit could see it
+/// and skip extraction while `libmkl_rt.so` (or whichever file lands last) is
+/// still being written — and then hand its half-built `lib_dir` straight to the
+/// linker (#64).
+///
+/// The fix mirrors [`install`]: unpack into a staging directory namespaced by
+/// this process's PID, then `fs::rename` it to `out` once the payload is
+/// complete. A `rename` is atomic on both POSIX and Windows for
+/// directory-to-directory moves within the same volume (both targets here are
+/// under `cache_dir()`), so any reader that observes `out` sees a fully
+/// unpacked tree, never a partial one — the same "existence implies complete"
+/// invariant the archive path already has.
+fn extract_conda_atomic(archive: &Path, out: &Path) {
+    // Appended, not `with_extension`: `out`'s final component is a package
+    // name like `mkl-2026.1.0-hecca717_243`, and `with_extension` replaces
+    // everything after its *last* dot — truncating that to
+    // `mkl-2026.1.part-<pid>` and discarding `0-hecca717_243`, which two
+    // differently-versioned packages could then collide on.
+    let mut staging_name = out
+        .file_name()
+        .expect("conda extract dir has a file name")
+        .to_os_string();
+    staging_name.push(format!(".part-{}", std::process::id()));
+    let staging = out.with_file_name(staging_name);
+    let _ = fs::remove_dir_all(&staging); // leftovers from an interrupted build
+    fs::create_dir_all(&staging).expect("create conda extract staging dir");
+    extract_conda(archive, &staging);
+
+    match fs::rename(&staging, out) {
+        Ok(()) => {}
+        Err(e) => {
+            // On Windows, renaming a directory onto an existing one always
+            // fails; on POSIX it fails when `out` is a non-empty directory.
+            // Either way that means the other build script's extraction won
+            // the race and `out` already holds a complete payload — since the
+            // only writer that ever creates `out` is this same rename, never a
+            // partial `create_dir_all`. Clean up the now-redundant staging copy
+            // and defer to what is already there.
+            let _ = fs::remove_dir_all(&staging);
+            if !out.exists() {
+                panic!("install extracted conda payload at {}: {e}", out.display());
+            }
+        }
+    }
 }
 
 /// Hash `path` and compare it to `expected`.

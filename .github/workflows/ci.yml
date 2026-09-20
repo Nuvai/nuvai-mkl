@@ -146,8 +146,25 @@ jobs:
       - name: cargo check
         run: cargo check --workspace
 
-      - name: cargo test
-        run: cargo test --workspace
+      # This job carries no cache action for ~/.cache/nuvai-mkl (unlike
+      # x86_64-windows below), so every run here already starts from a cold
+      # acquisition cache — it is the regression guard for #64: extraction
+      # used to race the two nuvai-mkl-src build-script units and hand a
+      # half-unpacked lib_dir to the linker before the first write ever
+      # completed. `cargo test --workspace` alone would only catch that on
+      # however this one run happens to interleave, so repeat the cold build a
+      # few times (clearing both the MKL cache and cargo's own build cache
+      # each time, since a warm `target/` can skip re-running the build
+      # scripts that race) to make a reintroduced race fail reliably instead
+      # of by chance.
+      - name: cargo test (repeated cold-cache builds — regression guard for #64)
+        run: |
+          for i in 1 2 3; do
+            echo "::group::cold-cache attempt $i/3"
+            rm -rf ~/.cache/nuvai-mkl target
+            cargo test --workspace
+            echo "::endgroup::"
+          done
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets

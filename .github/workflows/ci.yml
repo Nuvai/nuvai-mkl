@@ -143,24 +143,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # TEMPORARY (#19): diagnose why the acquisition download returns a 0-byte
-      # body from this runner while the same URL serves 143 MB from a developer
-      # machine, three minutes apart. This decides which fix is even available:
-      # if `curl` fetches it here, the refusal is aimed at the *client* (TLS
-      # fingerprint / User-Agent) and belongs in `acquire.rs`; if `curl` is
-      # refused too, it is aimed at the runner's IP range and needs a mirror
-      # rather than a code change. Remove before merging.
-      - name: Diagnose conda-forge reachability
-        run: |
-          URL=https://conda.anaconda.org/conda-forge/linux-64/mkl-2026.1.0-hecca717_243.conda
-          for ua in "curl/8" "ureq/2.12.1"; do
-            echo "--- User-Agent: $ua ---"
-            curl -sS -D /tmp/hdr -o /dev/null \
-              -w 'status=%{http_code} size=%{size_download} time=%{time_total}s\n' \
-              -A "$ua" --max-time 120 "$URL" || echo "curl exited $?"
-            grep -iE '^(content-length|content-encoding|cf-mitigated|cf-cache-status|server):' /tmp/hdr || true
-          done
-
       - name: cargo check
         run: cargo check --workspace
 

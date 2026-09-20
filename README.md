@@ -38,12 +38,27 @@ native backend behind the same typed API (ADR-0003) — or returns
 
 | MKL domain | x86_64 Linux/Windows (Intel MKL) | aarch64-apple-darwin backend | aarch64-unknown-linux-gnu backend |
 |---|---|---|---|
-| **BLAS** | `cblas_*` / `?gemm`, `?gemv`, `?dot`, `?axpy` | Accelerate **vecLib** (`cblas_*`, symbol-aliased) or OpenBLAS | OpenBLAS (`cblas_*`, symbol-aliased) |
+| **BLAS** | `cblas_*` / `?gemm` (incl. fp16 `cblas_hgemm`), `?dot`, `?axpy`, `?scal` | Accelerate **vecLib** (`cblas_*`, symbol-aliased) or OpenBLAS — no fp16 GEMM (`ErrorKind::Unsupported`) | OpenBLAS (`cblas_*`, symbol-aliased) — no fp16 GEMM (`ErrorKind::Unsupported`) |
 | **LAPACK** | `LAPACKE_*` (`?gesv`, `?getrf`, `?syev`, …) | Accelerate Fortran `_` entry points (`?gesv_`, …) + RowMajor shim, or OpenBLAS | OpenBLAS Fortran `_` entry points + RowMajor shim |
 | **FFT (DFTI)** | `DftiCreateDescriptor*` / `DftiCompute*` | Accelerate **vDSP** DFT (forward/inverse setups, `1/n` applied on inverse) | `ErrorKind::Unsupported` |
-| **VML** (vector math) | `vsExp`, `vsLn`, `vsSin`, `vsSqrt`, … | Accelerate **vForce** (`vvexpf`, `vvlogf`, …, `(dst, src, n)` order) | `ErrorKind::Unsupported` |
+| **VML** (vector math) | unary `vsExp`, `vsLn`, `vsSin`, `vsTanh`, `vsSqr`, … + binary `vsAdd`, `vsMul`, `vsSub`, `vsDiv`, `vsFmax`, `vsFmin` | Accelerate **vForce** for the unary transcendentals (`vvexpf`, `vvlogf`, `vvtanhf`, …, `(dst, src, n)` order), **vDSP** for `sqr` and all six binary ops (`vDSP_vsq`, `vDSP_vadd`, …, `(A, IA, B, IB, C, IC, N)` order) — vForce carries neither | `ErrorKind::Unsupported` |
 | **Sparse direct solvers (PARDISO/DSS)** | `pardisoinit`/`pardiso`, `dss_*` | Accelerate **Sparse/SparseSolve** (CSR→CSC transpose; QR for PARDISO, Cholesky for DSS) | `ErrorKind::Unsupported` |
 | **VSL** (RNG) | `vslNewStream` / `vsRngUniform` / `vsRngGaussian` | `rand` / `rand_chacha` / `rand_distr` (ChaCha20; statistically valid, not sequence-identical) | `ErrorKind::Unsupported` |
+
+## Notes on the coverage table
+
+- **fp16 GEMM takes `u16`.** `blas::hgemm` mirrors oneMKL's `MKL_F16`, which the
+  C interface defines as `unsigned short` — so the buffers are IEEE-754 binary16
+  bit patterns (`0x3C00` is `1.0`, `0x0000` is `0.0`) and this crate does not
+  convert for you. The symbol (`cblas_hgemm`) exists in oneMKL 2026.1.0 but in
+  neither ARM64 backend, hence the `Unsupported` above.
+- **`vml::fmax`/`vml::fmin` disagree about `NaN`.** oneMKL's `vsFmax`/`vsFmin`
+  return the non-`NaN` operand when exactly one of a pair is `NaN`; Accelerate's
+  `vDSP_vmax`/`vDSP_vmin` propagate it (measured against the framework). Apply
+  your own `NaN` policy if the difference matters to you.
+- **VSL RNG sequences are not identical to Intel's** on Apple Silicon — the
+  generators are statistically valid (`rand_chacha`), not sequence-compatible
+  (ADR-0003 decision 7).
 
 ## Backend selection
 
@@ -55,7 +70,7 @@ Selection is **explicit, never silent** (ADR-0003 decision 2):
 
 | Feature | Default? | Effect on aarch64-apple-darwin |
 |---|---|---|
-| `accelerate` | ✅ | Use Accelerate for every domain (BLAS/LAPACK via vecLib, FFT via vDSP, VML via vForce, sparse via Sparse/SparseSolve). |
+| `accelerate` | ✅ | Use Accelerate for every domain (BLAS/LAPACK via vecLib, FFT via vDSP, VML via vForce and vDSP, sparse via Sparse/SparseSolve). |
 | `openblas` | — | Use OpenBLAS for BLAS/LAPACK instead of vecLib (opt-in; FFT/VML/sparse/VSL still use Accelerate/`rand`). |
 
 - The active backend is queryable at build time via `nuvai_mkl_src::backend()` / `nuvai_mkl_src::backend_tag()`.

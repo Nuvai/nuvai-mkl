@@ -262,6 +262,110 @@ pub fn dgemm(
     Ok(())
 }
 
+/// `C := alpha * op(A) * op(B) + beta * C`, half precision.
+///
+/// The operands and both scalars are **IEEE-754 binary16 bit patterns in a
+/// `u16`**, mirroring oneMKL's own element type exactly: the C interface
+/// defines `MKL_F16` as `unsigned short` (`mkl_types.h`), not as a native
+/// half-precision float. Two consequences worth knowing before calling:
+///
+/// * the bits are the caller's to encode — `0x3C00` is `1.0`, `0x0000` is `0.0`,
+///   `0x3E00` is `1.5` — and this crate does not convert for you, so no
+///   rounding is applied that the caller did not ask for;
+/// * a Rust-side `f16`, where a toolchain has one, is a distinct type with its
+///   own ABI and is *not* interchangeable with `MKL_F16` at this boundary.
+///
+/// Validation is [`sgemm`]'s: `lda`/`ldb`/`ldc` and the slice lengths are
+/// checked against the transpose-adjusted dimensions by [`check_gemm_dims`]
+/// before any pointer reaches CBLAS, exactly as for the f32/f64 paths.
+///
+/// # Backends
+///
+/// Available on Intel x86_64 targets only, where it binds oneMKL's
+/// `cblas_hgemm` (verified present in oneMKL 2026.1.0: declared at
+/// `mkl_cblas.h:980`, and defined in the shipped libraries alongside the
+/// Fortran `hgemm_` and the mixed-precision `cblas_gemm_bf16bf16f32` this
+/// wrapper does not yet expose).
+///
+/// On both `aarch64` targets it returns [`ErrorKind::Unsupported`] **before
+/// validating anything**, so a feature-detection caller gets that answer
+/// regardless of its arguments — the same contract FFT and VML keep there.
+/// Half-precision GEMM is a oneMKL extension to CBLAS rather than part of the
+/// netlib routine set, and neither backend on `aarch64` carries it: Accelerate's
+/// CBLAS has no fp16 entry point, and OpenBLAS 0.3.30 exposes no `hgemm` or
+/// `cblas_hgemm` symbol at all.
+///
+/// [`ErrorKind::Unsupported`]: crate::error::ErrorKind::Unsupported
+#[allow(clippy::too_many_arguments)]
+pub fn hgemm(
+    layout: Layout,
+    transa: Transpose,
+    transb: Transpose,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: u16,
+    a: &[u16],
+    lda: i32,
+    b: &[u16],
+    ldb: i32,
+    beta: u16,
+    c: &mut [u16],
+    ldc: i32,
+) -> Result<()> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = (
+            layout, transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc,
+        );
+        Err(Error::unsupported(
+            "BLAS hgemm (fp16 GEMM) is not available on aarch64: the backends for \
+             this target provide netlib CBLAS, which has no half-precision GEMM \
+             entry point",
+        ))
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        check_gemm_dims(
+            layout,
+            transa,
+            transb,
+            m,
+            n,
+            k,
+            a.len(),
+            lda,
+            b.len(),
+            ldb,
+            c.len(),
+            ldc,
+        )?;
+        // SAFETY: `a`, `b` and `c` cover the transpose-adjusted
+        // leading-dimension region `cblas_hgemm` reads/writes, as enforced by
+        // `check_gemm_dims` above. The element type is `MKL_F16` = `unsigned
+        // short`, which `u16` matches in size and representation.
+        unsafe {
+            nuvai_mkl_sys::cblas_hgemm(
+                cblas_layout(layout),
+                cblas_trans(transa),
+                cblas_trans(transb),
+                m,
+                n,
+                k,
+                alpha,
+                a.as_ptr(),
+                lda,
+                b.as_ptr(),
+                ldb,
+                beta,
+                c.as_mut_ptr(),
+                ldc,
+            );
+        }
+        Ok(())
+    }
+}
+
 /// `y := alpha * x + y`, single precision.
 pub fn saxpy(n: i32, alpha: f32, x: &[f32], incx: i32, y: &mut [f32], incy: i32) -> Result<()> {
     check_vector(n, x.len(), incx, "x")?;

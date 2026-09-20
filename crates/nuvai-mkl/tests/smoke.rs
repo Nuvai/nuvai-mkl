@@ -94,6 +94,73 @@ fn blas_sgemm_2x2() {
     assert_close(&c, &[19.0, 22.0, 43.0, 50.0], 1e-5);
 }
 
+/// Half-precision GEMM (#47), against oneMKL's `cblas_hgemm`.
+///
+/// Intel targets only — both aarch64 backends return `Unsupported`, asserted
+/// separately below. The operands and the product are all integers below 2048,
+/// which IEEE-754 binary16 represents exactly, so the result is asserted
+/// bit-for-bit rather than within a tolerance. The bit patterns are the ones
+/// `struct.pack('<e', v)` produces in Python for these decimals.
+#[cfg(not(target_arch = "aarch64"))]
+#[test]
+fn blas_hgemm_2x2() {
+    // A = [[1,2],[3,4]] and B = [[5,6],[7,8]], row-major — the same operands as
+    // `blas_sgemm_2x2`, converted to binary16.
+    let a = [0x3C00u16, 0x4000, 0x4200, 0x4400]; //  1.0  2.0  3.0  4.0
+    let b = [0x4500u16, 0x4600, 0x4700, 0x4800]; //  5.0  6.0  7.0  8.0
+    let mut c = [0u16; 4];
+    blas::hgemm(
+        Layout::RowMajor,
+        Transpose::NoTrans,
+        Transpose::NoTrans,
+        2,
+        2,
+        2,
+        0x3C00, // alpha = 1.0
+        &a,
+        2,
+        &b,
+        2,
+        0x0000, // beta = 0.0
+        &mut c,
+        2,
+    )
+    .unwrap();
+    // A·B = [[19,22],[43,50]].
+    assert_eq!(c, [0x4CC0u16, 0x4D80, 0x5160, 0x5240]);
+}
+
+/// The fp16 path validates exactly as `sgemm` does (#47): an undersized operand
+/// must error rather than reach CBLAS, which performs no bounds checking.
+#[cfg(not(target_arch = "aarch64"))]
+#[test]
+fn blas_hgemm_rejects_undersized_slices() {
+    let a = [0x3C00u16; 4];
+    let b = [0x3C00u16; 4];
+    let mut c = [0u16; 4];
+    assert!(
+        blas::hgemm(
+            Layout::RowMajor,
+            Transpose::NoTrans,
+            Transpose::NoTrans,
+            // `m` far past what the 4-element `a` covers — the same shape as
+            // `blas_rejects_undersized_slices`.
+            100_000,
+            2,
+            2,
+            0x3C00,
+            &a,
+            2,
+            &b,
+            2,
+            0x0000,
+            &mut c,
+            2,
+        )
+        .is_err()
+    );
+}
+
 #[test]
 fn blas_axpy_dot() {
     let x = [1.0f32, 2.0, 3.0];
@@ -921,9 +988,9 @@ fn fft_roundtrip_c64_len8() {
     }
 }
 
-/// Exercise every VML function (all 11) in single precision against known
+/// Exercise every unary VML function (all 13) in single precision against known
 /// values. The f32/f64 variants run through both backends (MKL VML on Intel,
-/// Accelerate vForce on aarch64).
+/// Accelerate vForce — and vDSP for `sqr` — on aarch64).
 #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn vml_full_surface_f32() {
@@ -965,9 +1032,20 @@ fn vml_full_surface_f32() {
 
     vml::atan(&[0.0, 1.0], &mut dst).unwrap();
     assert_close(&dst, &[0.0, pi4], 1e-5);
+
+    // #49. `tanh` is the activation function; `sqr` is the one unary operation
+    // the Apple Silicon backend takes from vDSP rather than vForce, which has no
+    // squaring function.
+    let mut dst = [0.0f32; 3];
+    vml::tanh(&[0.0, 1.0, -1.0], &mut dst).unwrap();
+    assert_close(&dst, &[0.0, 0.761_594_2, -0.761_594_2], 1e-5);
+
+    vml::sqr(&[0.0, 1.5, -3.0], &mut dst).unwrap();
+    assert_close(&dst, &[0.0, 2.25, 9.0], 1e-5);
 }
 
-/// Every VML function in double precision (vForce `D` variants on aarch64).
+/// Every unary VML function in double precision (vForce `D` variants on
+/// aarch64, `vDSP_vsqD` for `sqr`).
 #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 #[test]
 fn vml_full_surface_f64() {
@@ -1009,6 +1087,103 @@ fn vml_full_surface_f64() {
 
     vml::datan(&[0.0, 1.0], &mut dst).unwrap();
     assert_close64(&dst, &[0.0, pi4], 1e-12);
+
+    let mut dst = [0.0f64; 3];
+    vml::dtanh(&[0.0, 1.0, -1.0], &mut dst).unwrap();
+    assert_close64(
+        &dst,
+        &[0.0, 0.761_594_155_955_765, -0.761_594_155_955_765],
+        1e-12,
+    );
+
+    vml::dsqr(&[0.0, 1.5, -3.0], &mut dst).unwrap();
+    assert_close64(&dst, &[0.0, 2.25, 9.0], 1e-12);
+}
+
+/// Every binary VML operation in single precision (#48).
+///
+/// `sub` and `div` are the cases that would expose a wrong argument order on
+/// Apple Silicon: vDSP declares `vDSP_vsub`/`vDSP_vdiv` as `(B, A)`, so dropping
+/// the compensating swap turns `a - b` into `b - a` and `a / b` into `b / a`
+/// while leaving `add`/`mul`/`fmax`/`fmin` correct — which is why the operands
+/// here are asymmetric and the two differ in value.
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn vml_binary_ops_f32() {
+    let a = [1.0f32, 4.0, -2.0];
+    let b = [2.0f32, 2.0, 3.0];
+    let mut r = [0.0f32; 3];
+
+    vml::add(&a, &b, &mut r).unwrap();
+    assert_close(&r, &[3.0, 6.0, 1.0], 1e-6);
+
+    vml::sub(&a, &b, &mut r).unwrap();
+    assert_close(&r, &[-1.0, 2.0, -5.0], 1e-6);
+
+    vml::mul(&a, &b, &mut r).unwrap();
+    assert_close(&r, &[2.0, 8.0, -6.0], 1e-6);
+
+    vml::div(&a, &b, &mut r).unwrap();
+    assert_close(&r, &[0.5, 2.0, -2.0 / 3.0], 1e-6);
+
+    vml::fmax(&a, &b, &mut r).unwrap();
+    assert_close(&r, &[2.0, 4.0, 3.0], 1e-6);
+
+    vml::fmin(&a, &b, &mut r).unwrap();
+    assert_close(&r, &[1.0, 2.0, -2.0], 1e-6);
+}
+
+/// Every binary VML operation in double precision.
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn vml_binary_ops_f64() {
+    let a = [1.0f64, 4.0, -2.0];
+    let b = [2.0f64, 2.0, 3.0];
+    let mut r = [0.0f64; 3];
+
+    vml::dadd(&a, &b, &mut r).unwrap();
+    assert_close64(&r, &[3.0, 6.0, 1.0], 1e-12);
+
+    vml::dsub(&a, &b, &mut r).unwrap();
+    assert_close64(&r, &[-1.0, 2.0, -5.0], 1e-12);
+
+    vml::dmul(&a, &b, &mut r).unwrap();
+    assert_close64(&r, &[2.0, 8.0, -6.0], 1e-12);
+
+    vml::ddiv(&a, &b, &mut r).unwrap();
+    assert_close64(&r, &[0.5, 2.0, -2.0 / 3.0], 1e-12);
+
+    vml::dfmax(&a, &b, &mut r).unwrap();
+    assert_close64(&r, &[2.0, 4.0, 3.0], 1e-12);
+
+    vml::dfmin(&a, &b, &mut r).unwrap();
+    assert_close64(&r, &[1.0, 2.0, -2.0], 1e-12);
+}
+
+/// The binary path validates all three buffers, on the same rule the unary
+/// path's `src`/`dst` check applies (#48): unequal lengths are rejected before
+/// any pointer reaches the backend, whichever buffer is the odd one out.
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+#[test]
+fn vml_binary_rejects_length_mismatch() {
+    use nuvai_mkl::error::ErrorKind;
+
+    let a = [1.0f32, 2.0, 3.0];
+    let mut r = [0.0f32; 3];
+
+    // `b` short of `a`.
+    assert_eq!(
+        vml::add(&a, &[1.0, 2.0], &mut r).err().unwrap().kind(),
+        ErrorKind::InvalidArgument
+    );
+    // `r` short of both.
+    assert_eq!(
+        vml::add(&a, &[1.0, 2.0, 3.0], &mut r[..2])
+            .err()
+            .unwrap()
+            .kind(),
+        ErrorKind::InvalidArgument
+    );
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
@@ -1475,6 +1650,41 @@ fn dss_rejects_csr_row_count_mismatch_on_aarch64() {
     assert_eq!(err.kind(), ErrorKind::InvalidArgument);
 }
 
+/// Apple Silicon has no fp16 GEMM: Accelerate's CBLAS carries no half-precision
+/// entry point, and this holds under the `openblas` feature too (OpenBLAS
+/// exposes no `hgemm`/`cblas_hgemm` symbol). #47 requires it to fail loudly
+/// rather than fall back to something else (ADR-0003, decision 2).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn blas_hgemm_unsupported_on_apple_silicon() {
+    use nuvai_mkl::error::ErrorKind;
+    let a = [0x3C00u16; 4];
+    let b = [0x3C00u16; 4];
+    let mut c = [0u16; 4];
+    assert_eq!(
+        blas::hgemm(
+            Layout::RowMajor,
+            Transpose::NoTrans,
+            Transpose::NoTrans,
+            2,
+            2,
+            2,
+            0x3C00,
+            &a,
+            2,
+            &b,
+            2,
+            0x0000,
+            &mut c,
+            2,
+        )
+        .err()
+        .unwrap()
+        .kind(),
+        ErrorKind::Unsupported
+    );
+}
+
 /// On `aarch64-unknown-linux-gnu` OpenBLAS covers only BLAS/LAPACK, so every
 /// other domain must return `ErrorKind::Unsupported` — never a silent no-op or
 /// a panic (ADR-0003, decision 2).
@@ -1502,6 +1712,64 @@ mod linux_aarch64_unsupported {
         let mut dst = [0.0f32; 2];
         assert_eq!(
             vml::exp(&[0.0, 1.0], &mut dst).err().unwrap().kind(),
+            ErrorKind::Unsupported
+        );
+
+        // The unary additions (#49) and every binary operation (#48) take the
+        // same path — Unsupported before any argument is inspected.
+        assert_eq!(
+            vml::sqr(&[0.0, 1.0], &mut dst).err().unwrap().kind(),
+            ErrorKind::Unsupported
+        );
+        assert_eq!(
+            vml::tanh(&[0.0, 1.0], &mut dst).err().unwrap().kind(),
+            ErrorKind::Unsupported
+        );
+
+        let mut r = [0.0f32; 2];
+        assert_eq!(
+            vml::add(&[0.0, 1.0], &[1.0, 2.0], &mut r)
+                .err()
+                .unwrap()
+                .kind(),
+            ErrorKind::Unsupported
+        );
+        // Asserted with mismatched operand lengths on purpose: `Unsupported`
+        // comes before validation, so this must not be an `InvalidArgument`.
+        assert_eq!(
+            vml::sub(&[0.0, 1.0], &[1.0], &mut r).err().unwrap().kind(),
+            ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn hgemm_unsupported() {
+        // #47: OpenBLAS exposes no half-precision GEMM, so the fp16 path fails
+        // loudly instead of falling back to an fp32 one — and before validating
+        // its arguments.
+        let a = [0x3C00u16; 4];
+        let b = [0x3C00u16; 4];
+        let mut c = [0u16; 4];
+        assert_eq!(
+            blas::hgemm(
+                Layout::RowMajor,
+                Transpose::NoTrans,
+                Transpose::NoTrans,
+                2,
+                2,
+                2,
+                0x3C00,
+                &a,
+                2,
+                &b,
+                2,
+                0x0000,
+                &mut c,
+                2,
+            )
+            .err()
+            .unwrap()
+            .kind(),
             ErrorKind::Unsupported
         );
     }

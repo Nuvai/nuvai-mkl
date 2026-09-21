@@ -41,10 +41,14 @@ rand_chacha = "0.10.0"
 rand_distr = "0.6.0"
 
 [build-dependencies]
+# The per-binary link arguments this crate's own test/example/bench binaries
+# need — the runtime rpath, `--no-as-needed`, and the compiled
+# `force_runtime.c` object — are emitted by
+# `nuvai_mkl_src::emit_binary_link_args`, which a downstream consumer's build
+# script calls too (#70). `nuvai-mkl-src` compiles the object (it is the only
+# crate that can publish its path as `DEP_MKL_FORCE_OBJ`) and the propagating
+# oneMKL directives all come from there as well.
 nuvai-mkl-src = { workspace = true }
-# Compiles `build/force_runtime.c` for the x86_64 Linux arm of `build.rs`; see
-# that file for why an object file is needed rather than a linker flag.
-cc = "1"
 
 # docs.rs has no network and no MKL; build with no features so the
 # docs.rs build never pulls acquisition/linking (build.rs also short-circuits on DOCS_RS).

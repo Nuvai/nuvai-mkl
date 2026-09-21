@@ -193,7 +193,7 @@ fn system_mkl() -> Option<MklInfo> {
     // (`static` feature, Linux only — ADR-0005) needs no different `lib_dir`
     // here, only a different choice of files at link time in `emit_intel_mkl`.
     let static_link = wants_static_link() && target_os() == "linux";
-    Some(MklInfo { include_dir, lib_dir, omp_lib_dir: None, dll_dirs, static_link })
+    Some(MklInfo { include_dir, lib_dir, omp_lib_dir: None, dll_dirs, static_link, force_obj: None })
 }
 
 /// One downloadable conda package: `(filename, sha256)`.
@@ -248,6 +248,10 @@ fn download_mkl() -> MklInfo {
             omp_lib_dir: None,
             dll_dirs: Vec::new(),
             static_link: true,
+            // No `force_runtime.c` for the static path: it exists to keep the
+            // *dynamic* OpenMP runtime in DT_NEEDED (#44), and a static link
+            // has no OpenMP runtime to keep (ADR-0005 decision 4).
+            force_obj: None,
         };
     }
 
@@ -274,6 +278,10 @@ fn download_mkl() -> MklInfo {
             omp_lib_dir: None,
             dll_dirs,
             static_link: false,
+            // Windows-only key difference: the loader finds `mkl_rt.3.dll` and
+            // the OpenMP/TBB DLLs on `PATH`, so nothing has to be kept in a
+            // DT_NEEDED table that does not exist (#44 is Linux-only).
+            force_obj: None,
         }
     } else {
         // Linux conda packages lay out headers under `include/` and libs under
@@ -290,6 +298,10 @@ fn download_mkl() -> MklInfo {
             omp_lib_dir,
             dll_dirs: Vec::new(),
             static_link: false,
+            // Compiled and published by `build.rs` for exactly this arm of
+            // exactly this target — the one that leaves `omp_*` undefined in a
+            // shared object with no DT_NEEDED to resolve it (#44).
+            force_obj: None,
         }
     }
 }

@@ -1,0 +1,24 @@
+[package]
+name = "nuvai-mkl-consumer-dependency-only"
+description = "Fixture: a downstream crate that links and runs on the dependency alone (#70)"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+# A workspace of its own, deliberately. The distinction #70 is about is between
+# the package that *emits* a build-script linker argument and the package that
+# links it, so a member of the root workspace would be a different package and
+# would show it — but `cargo test --workspace` at the root would also build it
+# with the workspace's unified features, and this fixture has to pin one
+# selection to be meaningful. A separate workspace keeps it out of that
+# unification (and gives it its own lockfile). See `consumers/README.md`.
+[workspace]
+
+[dependencies]
+# The integration #70 asks for, verbatim: no build script, no
+# `[build-dependencies]`, no `.cargo/config.toml`, no `RUSTFLAGS`. `static` is
+# what makes it work — the group link over Intel's three archives is a linker
+# script, which is a `-l` input, so it propagates to this crate's binaries the
+# way `rustc-link-arg` never could.
+nuvai-mkl = { path = "../../crates/nuvai-mkl", default-features = false, features = ["static"] }

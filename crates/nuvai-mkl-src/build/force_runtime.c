@@ -13,10 +13,12 @@
  * `-liomp5`, `-l:libiomp5.so` or a bare path — before consulting
  * `--no-as-needed`, after which it prunes the library as unreferenced. What
  * every linker agrees on is an undefined symbol in a regular object file,
- * which is what this translation unit contributes. `build.rs` compiles it to
- * an object and passes that object to the linker directly, so it is always
- * linked (an archive member would only be pulled in if something referenced
- * *it*, which nothing does).
+ * which is what this translation unit contributes. `nuvai-mkl-src/build.rs`
+ * compiles it to an object, publishes that object's path as `DEP_MKL_FORCE_OBJ`
+ * and the owner of each binary passes it to the linker directly — so it is
+ * always linked (an archive member would only be pulled in if something
+ * referenced *it*, which nothing does), and a downstream consumer gets the
+ * same object rather than a second compilation of this file (#70).
  *
  * The initialisers are never run and the array is never read; only the
  * relocations matter. `used` stops the compiler discarding it, and `retain`

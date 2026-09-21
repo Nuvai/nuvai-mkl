@@ -1,0 +1,39 @@
+[package]
+name = "nuvai-mkl-consumer-build-script"
+description = "Fixture: a downstream crate that supplies the per-binary link arguments itself (#70)"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+build = "build.rs"
+
+# Its own workspace, for the same reason as
+# `consumers/dependency-only/Cargo.toml`: the distinction is between the package
+# that emits a build-script linker argument and the package that links it, and
+# the feature selection has to be pinned rather than unified with the root
+# workspace's.
+[workspace]
+
+[dependencies]
+nuvai-mkl = { path = "../../crates/nuvai-mkl", default-features = false }
+# Required, and required *here* rather than only below: Cargo forwards a `links`
+# provider's `DEP_MKL_*` metadata to a build script through the package's normal
+# `[dependencies]` edge only — a `[build-dependencies]` entry receives none of it
+# (#70, verified: the same build script reads `DEP_MKL_LIB_DIR` unset with the
+# build-dependency alone). The build script reads those paths to emit this
+# crate's rpath; without this line it emits the warning instead, and the binary
+# fails to start. This fixture also calls `nuvai_mkl_src::backend_tag()` to
+# report the backend, which is the documented use of the crate in code — a
+# consumer that does not would see Cargo's "unused dependency" note for it.
+nuvai-mkl-src = { path = "../../crates/nuvai-mkl-src", default-features = false }
+
+[build-dependencies]
+# The same crate again, because a build script can only *use* code from this
+# table: `nuvai_mkl_src::emit_binary_link_args` is the call `build.rs` makes.
+nuvai-mkl-src = { path = "../../crates/nuvai-mkl-src", default-features = false }
+
+[features]
+# Opting into static linking from a consumer, the way a real downstream crate
+# would. `--features static` is then the *only* difference from the dynamic
+# build, which is what makes the pair of CI runs meaningful.
+static = ["nuvai-mkl/static"]

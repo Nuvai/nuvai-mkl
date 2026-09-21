@@ -7,7 +7,63 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ## [Unreleased]
 
+### Fixed
+
+- Link directives now reach a **downstream** crate, not just this repository's
+  own binaries (issue #70). Both link paths worked here and broke in a crate
+  that merely depended on `nuvai-mkl`, because Cargo applies
+  `cargo:rustc-link-lib`/`cargo:rustc-link-search` to every link in the graph
+  but scopes `cargo:rustc-link-arg` to the *emitting package's* own targets —
+  and every oneMKL directive was the latter, emitted by `nuvai-mkl/build.rs`.
+  A static consumer received the archive directory on its search path and not
+  one `-l` flag (`mold: error: undefined symbol: cblas_sgemm`); a dynamic one
+  linked and then failed at start-up with `libmkl_rt.so.3: cannot open shared
+  object file`. The fix moves everything expressible as a library or a search
+  path into `nuvai-mkl-src`, the sole `links = "mkl"` provider, where it
+  propagates: **the static group link is now a linker script**
+  (`GROUP ( libmkl_intel_lp64.a libmkl_sequential.a libmkl_core.a )` written into
+  `OUT_DIR` and requested as `static:-bundle=nuvai_mkl_static_group`) rather
+  than a `--start-group` argument. `-bundle` is load-bearing: a `-l static=`
+  input defaults to being bundled into the rlib, which makes rustc read the file
+  as an archive, and a linker script is not one (`failed to add native library
+  …: Unsupported archive identifier`). ADR-0006 records the whole split,
+  including the Cargo rule it turns on — `DEP_<links>_*` metadata reaches a
+  build script only through a normal `[dependencies]` edge, never through
+  `[build-dependencies]`.
+
+  The per-binary half (the runtime rpath, `--no-as-needed`, and the
+  `force_runtime.c` object that keeps `libmkl_rt`'s implicit `libm`/`libiomp5`
+  dependencies in DT_NEEDED under mold, #44) cannot be spelled as a propagating
+  directive — no stable Cargo channel can put an rpath on another package's
+  binary — so it now lives in one shared entry point,
+  `nuvai_mkl_src::emit_binary_link_args`, called by `nuvai-mkl/build.rs` for the
+  workspace's binaries and by a downstream crate's own `build.rs`. That makes a
+  **static** consumer zero-configuration (a plain `features = ["static"]`
+  dependency links and runs) and a **dynamic** one two manifest entries plus one
+  line, both documented in the README's "Linking from another crate".
+
+- `force_runtime.c` moved from `nuvai-mkl/build/` to `nuvai-mkl-src/build/`,
+  with the `cc` build-dependency, and its compiled object's path is published as
+  `DEP_MKL_FORCE_OBJ`. The object must be the same file for every binary that
+  links it, and only the `links = "mkl"` provider can hand a path to a
+  dependent's build script (#24). It is now emitted only when an
+  `omp_lib_dir` exists, i.e. when a `-liomp5` is actually on the link line: a
+  system oneAPI install publishes none, and there the object's undefined `omp_*`
+  reference had nothing to resolve against.
+
 ### Added
+
+- `consumers/` — two crates that depend on `crates/nuvai-mkl` **from outside**
+  the workspace, and the `x86_64-linux-downstream` CI job that builds and *runs*
+  them (`dependency-only`: static, no `build.rs`, nothing configured;
+  `build-script-helper`: the one-line call, dynamic and static). A workspace
+  member could not stand in for them: the distinction #70 turns on is between
+  packages, and `cargo test --workspace` builds a member's targets as the wrong
+  package and unifies its features with the workspace's. Verified on x86_64
+  Linux with both `ld` and `mold`.
+
+- ADR-0006 (propagating link directives), amending ADR-0005 decisions 5 and 6
+  and ADR-0003 decision 7.
 
 - A per-target assertion that `nuvai_mkl_src::backend()` reports the backend each
   CI target is supposed to have (issue #11):

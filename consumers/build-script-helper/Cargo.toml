@@ -1,6 +1,6 @@
 [package]
 name = "nuvai-mkl-consumer-build-script"
-description = "Fixture: a downstream crate that supplies the per-binary link arguments itself (#70)"
+description = "Fixture: a downstream crate that supplies the per-binary link arguments itself (#70, #72)"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.99"
@@ -33,7 +33,15 @@ nuvai-mkl-src = { path = "../../crates/nuvai-mkl-src", default-features = false 
 nuvai-mkl-src = { path = "../../crates/nuvai-mkl-src", default-features = false }
 
 [features]
-# Opting into static linking from a consumer, the way a real downstream crate
-# would. `--features static` is then the *only* difference from the dynamic
-# build, which is what makes the pair of CI runs meaningful.
+# The two link modes, named from a consumer, the way a real downstream crate
+# would — and since #72 they are a real pair rather than a default and an
+# opt-in: `static` is what this crate gets with no feature at all, and `dynamic`
+# is the opt-out that restores the threaded `mkl_rt` dispatcher.
+#
+# `--features static` is therefore the explicit spelling of the default: it
+# changes nothing, and is kept as a CI run because it is what a consumer reading
+# the pre-#72 README would have written. `--features dynamic` is the one that
+# changes the build — and, with this fixture's `build.rs` in place, the one that
+# proves the per-binary link arguments are what make that build runnable.
 static = ["nuvai-mkl/static"]
+dynamic = ["nuvai-mkl/dynamic"]

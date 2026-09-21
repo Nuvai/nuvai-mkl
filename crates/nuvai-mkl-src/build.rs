@@ -60,18 +60,60 @@ fn main() {
     let backend = backend_for_target(&target_os, &target_arch, target_env.as_deref())
         .unwrap_or_else(|e| panic!("{e}"));
 
-    // `static` (ADR-0005) is x86_64-unknown-linux-gnu only: no static-archive
-    // conda package exists for Windows, and Accelerate/OpenBLAS have no static
-    // form. The library-target `compile_error!` in `backend.rs` catches this
-    // for the crate itself, but a build script is host-compiled and cannot
-    // `compile_error!` for a *different* target — so cross-compiling
-    // `--target x86_64-pc-windows-msvc --features static` from any host must be
-    // caught here instead, loudly, rather than silently linking dynamically.
-    if wants_static_link() && !(target_os == "linux" && target_arch == "x86_64") {
+    // `static` (ADR-0005) is x86_64-unknown-linux-gnu **glibc** only: no
+    // static-archive conda package exists for Windows, Accelerate/OpenBLAS have
+    // no static form, and the conda linux-64 archives are glibc's. The
+    // library-target `compile_error!` in `backend.rs` catches that for the crate
+    // itself, but a build script is host-compiled and cannot `compile_error!`
+    // for a *different* target — so a cross-compile must be caught here instead,
+    // loudly, rather than silently linking dynamically. Which cross-compiles
+    // those are, and why `HOST` is part of the test, is below.
+    //
+    // The `target_env` test is not redundant with `backend.rs`'s, which has
+    // always required gnu: this check used to accept any `x86_64-unknown-linux-*`
+    // and would then report "only supported on x86_64-unknown-linux-gnu" *for*
+    // an `x86_64-unknown-linux-musl` target — a message that reads as
+    // nonsense just before the `compile_error!` says the same thing
+    // understandably.
+    //
+    // The `HOST` term answers the question #72 made this check unable to answer
+    // alone: *who* asked. `static` now also arrives without the caller asking —
+    // from the wrapper crates' `[build-dependencies]` edge, which Cargo matches
+    // against the **host** — so on the supported host cross-compiling to a
+    // target that cannot link statically (say `aarch64-unknown-linux-gnu`) this
+    // unit carries the feature while no one requested it.
+    //
+    // Requiring the host to be *not* the supported triple makes the fire
+    // condition exact rather than a heuristic, because it is then the only way
+    // the feature can have been requested at all:
+    //
+    // * the `[dependencies]` edge that also carries `static` is matched against
+    //   the *target*, and requests it only for the one target this check
+    //   accepts — so it can never be the source of a panic here, and
+    // * the `[build-dependencies]` edge can only fire on the supported host.
+    //
+    // So "host is not the supported triple and the target is not either" means
+    // an explicit request, which is precisely what this must reject. On the
+    // supported host every unsupported target is still rejected, one step later
+    // and by the unit that can describe it truthfully: `backend.rs`'s
+    // `compile_error!`, which the *target* unit hits because its `cfg` describes
+    // the target rather than the host.
+    let static_host = env::var("HOST").is_ok_and(|host| host == "x86_64-unknown-linux-gnu");
+    let target_supports_static =
+        target_os == "linux" && target_arch == "x86_64" && target_env.as_deref() == Some("gnu");
+    if wants_static_link() && !static_host && !target_supports_static {
+        // The libc component is part of the message because it is part of the
+        // test: naming only `linux-x86_64` at an `x86_64-unknown-linux-musl`
+        // target is the kind of message that sends a reader looking for a bug in
+        // the wrong place.
+        let target = match target_env.as_deref() {
+            Some(env) => format!("{target_os}-{target_arch}-{env}"),
+            None => format!("{target_os}-{target_arch}"),
+        };
         panic!(
-            "nuvai-mkl-src: the `static` feature is only supported on \
-             x86_64-unknown-linux-gnu (target is {target_os}-{target_arch}) — Windows has \
-             no static-archive conda package, and Accelerate/OpenBLAS (the aarch64 \
+            "nuvai-mkl-src: `static` is only supported on x86_64-unknown-linux-gnu (this \
+             build's target is {target}) — Windows has no static-archive conda package, the \
+             conda linux-64 archives are glibc's, and Accelerate/OpenBLAS (the aarch64 \
              fallbacks) have no static form to switch to. Disable `static` for this target."
         );
     }
@@ -190,6 +232,39 @@ fn emit_intel_mkl(target_os: &str) {
             println!("cargo:rustc-link-lib=static:-bundle={STATIC_GROUP_LIB}");
         }
         "linux" => {
+            // #72: the dynamic path is an explicit opt-in, and this is the one
+            // place that knows which path was taken early enough to say so.
+            //
+            // `static` is what a consumer gets by declaring nothing, so the
+            // only way to reach this arm is to have asked for `dynamic` (or to
+            // depend on this crate directly rather than on the wrapper, which
+            // is the one case with no target-gated edge to supply `static`) —
+            // both are callers that want the threaded `mkl_rt` dispatcher and
+            // now need to know what their own binaries owe it. Emitted as a
+            // warning rather than an error because the *requirement* is real
+            // but satisfiable outside this build (an rpath from the consumer's
+            // own build script, or LD_LIBRARY_PATH where the binary runs), and
+            // because there is nothing here that can look at a dependent's link
+            // line to check whether either was done.
+            //
+            // The dynamic half of the issue is *not* silent any more: before
+            // #72 the default path led here with no diagnostic and failed at
+            // load time with `libmkl_rt.so.3: cannot open shared object file`,
+            // naming the loader rather than this crate.
+            if feature_enabled("DYNAMIC") {
+                println!(
+                    "cargo:warning=nuvai-mkl: linking the dynamic oneMKL runtime (`mkl_rt`) is \
+                     the explicit `dynamic` opt-in (#72) — the threaded path, whose binaries \
+                     must find `libmkl_rt.so.3` and the OpenMP runtime in the acquisition cache \
+                     at load time. No directive this crate can emit puts a runtime search path \
+                     on a *dependent's* binary (ADR-0006), so a binary that links this build \
+                     from another package needs either a `build.rs` calling \
+                     `nuvai_mkl_src::emit_binary_link_args()` (with `nuvai-mkl-src` in *both* \
+                     `[dependencies]` and `[build-dependencies]`), or `LD_LIBRARY_PATH` set to \
+                     the cache's `lib` directories wherever it runs. Without `dynamic` the \
+                     default is the static link, which needs neither."
+                );
+            }
             println!("cargo:rustc-link-lib=dylib=mkl_rt");
             println!("cargo:rustc-link-lib=dylib=dl");
             println!("cargo:rustc-link-lib=dylib=pthread");

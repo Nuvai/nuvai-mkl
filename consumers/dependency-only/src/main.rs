@@ -15,8 +15,17 @@
 //! `undefined symbol: cblas_sgemm`. It is now a linker script, which is a `-l`
 //! input, so it propagates the way `rustc-link-lib`/`rustc-link-search` do.
 //!
-//! `x86_64-unknown-linux-gnu` only, by construction: the `static` feature and
-//! the group script it selects exist nowhere else.
+//! `x86_64-unknown-linux-gnu` only, by construction: the static link and the
+//! group script it selects exist nowhere else.
+//!
+//! Since #72 this is also the *default* link mode on that target, which is why
+//! this fixture's manifest no longer names the `static` feature: it declares a
+//! bare `nuvai-mkl` dependency, exactly as the issue's repro did, and the
+//! binary must still link and run. Before #72 the same manifest took the
+//! dynamic path and failed at start-up — `libmkl_rt.so.3: cannot open shared
+//! object file` — because nothing had put a runtime search path on this
+//! binary, and nothing could: `rustc-link-arg` does not propagate to a
+//! dependent, and no other Cargo channel carries an rpath (ADR-0006).
 
 // The body is shared with the other fixture, which asserts the same results
 // through a different link path — see `consumers/README.md`.

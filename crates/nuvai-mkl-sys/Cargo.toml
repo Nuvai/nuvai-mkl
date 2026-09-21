@@ -24,14 +24,34 @@ accelerate = ["nuvai-mkl-src/accelerate"]
 openblas = ["nuvai-mkl-src/openblas"]
 # Forward static linking (x86_64-unknown-linux-gnu only — ADR-0005) to
 # `nuvai-mkl-src`, the sole acquirer/emitter. See that crate's `static`
-# feature doc for what this does and does not affect on other targets.
+# feature doc for what this does and does not affect on other targets. **On by
+# default on that target** (#72), via the target-gated edge below.
 static = ["nuvai-mkl-src/static"]
+# Forward the opt-out from that default: link the dynamic, threaded `mkl_rt`
+# dispatcher instead (#72). See `nuvai-mkl-src`'s `dynamic` feature doc.
+dynamic = ["nuvai-mkl-src/dynamic"]
 
 [dependencies]
 nuvai-mkl-src = { workspace = true }
 
 [build-dependencies]
 nuvai-mkl-src = { workspace = true }
+
+# `static` is the default on x86_64-unknown-linux-gnu (#72) — the same pair of
+# target-gated edges as `nuvai-mkl`'s, for the same reasons (a `[target.…]`
+# table merges with the plain entry above and the resulting feature reaches
+# downstream consumers; two edges because Cargo builds a host and a target unit
+# of `nuvai-mkl-src` and does not unify features across them, with the
+# `dependencies` one matched against the *target* triple and the
+# `build-dependencies` one against the *host*). Repeated here rather than
+# inherited, because a consumer may depend on `nuvai-mkl-sys` without the
+# wrapper — that is the pair whose `DEP_MKL_*` metadata and link directives this
+# crate's own unit would otherwise leave dynamic.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))'.dependencies]
+nuvai-mkl-src = { workspace = true, features = ["static"] }
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))'.build-dependencies]
+nuvai-mkl-src = { workspace = true, features = ["static"] }
 
 # bindgen is only needed where oneMKL headers exist (Intel targets). On
 # aarch64-apple-darwin and aarch64-unknown-linux-gnu the FFI surface is

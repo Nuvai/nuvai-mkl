@@ -9,10 +9,15 @@
 //! the binary, and `build.rs` here is the entire cost of getting them — one
 //! call, plus the two `nuvai-mkl-src` manifest entries `Cargo.toml` explains.
 //!
-//! Run against the default (dynamic) backend it is the `libmkl_rt.so.3: cannot
-//! open shared object file` half of the issue; run with `--features static` the
-//! same call emits nothing at all, because a static link has no shared object
-//! to point an rpath at.
+//! Run with `--features dynamic` it is the `libmkl_rt.so.3: cannot open shared
+//! object file` half of the issue; run with no feature (or `--features static`,
+//! which is the same thing spelled out — see the manifest) the same call emits
+//! nothing at all, because a static link has no shared object to point an rpath
+//! at. Before #72 the first of those was the *default*, so this fixture's
+//! no-feature build was the failing one and the pair read as "the fix" and "the
+//! workaround"; now the default is the one that needs nothing, and the fixture
+//! exists to prove the `dynamic` opt-in is still usable when its arguments are
+//! supplied.
 
 // The body is shared with the other fixture, so the two differ only in link
 // plumbing — see `consumers/README.md`.

@@ -3,6 +3,12 @@
 - **Status:** Accepted
 - **Date:** 2026-09-21
 - **Task:** #68 — evaluate/support static linking of oneMKL (Linux x86_64 first)
+- **Amended by:** ADR-0007 (#72) — decision 1 below, whose size premise is
+  measurably wrong (`mkl-static` is 124 MB compressed against the dynamic `mkl`
+  package's 136 MB, not the larger acquisition) and whose conclusion changed
+  with it: the feature is now the **default** on `x86_64-unknown-linux-gnu`, and
+  the cost that keeps it from being free is the `mkl_sequential` threading layer
+  from decision 4, not the download.
 - **Amended by:** ADR-0006 (#70) — decisions 5 and 6 below, where the group link
   is emitted from `nuvai-mkl/build.rs` as a `rustc-link-arg`. It now propagates
   from `nuvai-mkl-src` as a linker script, because a link-argument reaches only

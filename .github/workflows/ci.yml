@@ -138,8 +138,14 @@ jobs:
   # x86_64 Linux: Intel oneMKL acquired by nuvai-mkl-src at build time
   # (conda-forge download into ~/.cache/nuvai-mkl). libclang is required by the
   # nuvai-mkl-sys bindgen pass.
+  #
+  # This job builds with **no feature**, and since #72 that means the *static*
+  # link: `nuvai-mkl` and `nuvai-mkl-sys` enable it from a target-gated
+  # dependency edge, so the default is the mode that needs no per-binary link
+  # arguments. The `x86_64-linux-dynamic` job below is the `dynamic` opt-in —
+  # the threaded `mkl_rt` dispatcher, whose binaries do need them.
   x86_64-linux:
-    name: x86_64-unknown-linux-gnu (Intel MKL)
+    name: x86_64-unknown-linux-gnu (Intel MKL, static default)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -177,17 +183,50 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: verify the default build links no dynamic MKL runtime
+        # #72's own acceptance criterion, asserted rather than assumed: with no
+        # feature at all the binary must not merely *start* (which the tests
+        # above show) but have no runtime dependency on the dynamic dispatcher —
+        # nothing to rpath, no OpenMP runtime to be resolved late. This is the
+        # assertion that would have caught #72: it fails for any build that
+        # quietly takes the dynamic path.
+        #
+        # The binaries are located by asking cargo, not by looking in
+        # `target/debug/deps` — see the same step's note in the #70 history: a
+        # nightly moved test executables into the split build-dir layout, and a
+        # `find` by path silently matched nothing for two runs on `main`.
+        run: |
+          bins=$(cargo test --workspace --no-run --message-format=json 2>/dev/null \
+            | grep -F 'crates/nuvai-mkl/Cargo.toml' \
+            | grep -oE '"executable":"[^"]*"' | cut -d'"' -f4)
+          if [ -z "$bins" ]; then
+            echo "::error::cargo reported no nuvai-mkl test executables to check"
+            exit 1
+          fi
+          for bin in $bins; do
+            echo "checking $bin"
+            ldd "$bin"
+            if ldd "$bin" | grep -qE 'libmkl_rt|libiomp5|libomp\.so'; then
+              echo "::error::$bin links a dynamic MKL/OpenMP runtime, but this job passes no feature — the static default (#72) is not in effect"
+              exit 1
+            fi
+          done
+
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets
 
-  # x86_64 Linux, static (`static` feature — ADR-0005, #68): links Intel
-  # oneMKL's static archives instead of the dynamic `mkl_rt` dispatcher.
-  # Acquires a much larger conda-forge package (`mkl-static`, ~130 MB
-  # compressed) than the dynamic `mkl` package the job above uses, so —
-  # unlike `x86_64-linux`, which is intentionally cold every run to guard
-  # against #64 — this job caches ~/.cache/nuvai-mkl across runs.
-  x86_64-linux-static:
-    name: x86_64-unknown-linux-gnu (Intel MKL, static)
+  # x86_64 Linux, the `dynamic` **opt-in** (#72): the threaded `mkl_rt`
+  # dispatcher instead of the static archives a bare dependency now gets. This
+  # job is what keeps the workspace covered on the path `x86_64-linux` left —
+  # and the assertion it adds is the mirror of that job's, so a build that
+  # silently takes the wrong one fails either way.
+  #
+  # It caches ~/.cache/nuvai-mkl across runs (unlike `x86_64-linux`, which is
+  # deliberately cold every run to guard #64) because its `mkl` package is the
+  # larger acquisition of the two and nothing here is a regression guard for
+  # acquisition.
+  x86_64-linux-dynamic:
+    name: x86_64-unknown-linux-gnu (Intel MKL, dynamic)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -202,41 +241,29 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Cache the conda-forge MKL static archive acquisition
+      - name: Cache the conda-forge MKL acquisition
         uses: actions/cache@v4
         with:
           path: ~/.cache/nuvai-mkl
-          key: nuvai-mkl-conda-static-linux-${{ hashFiles('crates/nuvai-mkl-src/src/acquire.rs') }}
+          key: nuvai-mkl-conda-dynamic-linux-${{ hashFiles('crates/nuvai-mkl-src/src/acquire.rs') }}
 
-      - name: cargo build (static)
-        run: cargo build --workspace --features static
+      - name: cargo test (dynamic)
+        # The `dynamic` feature is the only difference from the job above, and
+        # the workspace's own binaries are covered here because the *caller* in
+        # that case is `nuvai-mkl/build.rs` — the same
+        # `emit_binary_link_args` a downstream consumer calls (#70).
+        run: cargo test --workspace --features dynamic
 
-      - name: cargo test (static)
-        run: cargo test --workspace --features static
+      - name: cargo clippy (dynamic)
+        run: cargo clippy --workspace --all-targets --features dynamic
 
-      - name: cargo clippy (static)
-        run: cargo clippy --workspace --all-targets --features static
-
-      - name: verify no runtime dependency on the dynamic MKL dispatcher
-        # The whole point of `static`: the resulting binary must not link
-        # libmkl_rt.so or libiomp5.so/libomp.so at all (the sequential
-        # threading layer needs no OpenMP runtime — see ADR-0005 decision 4).
-        # `ldd` on every nuvai-mkl test binary is a direct check of that,
-        # rather than trusting the build succeeded for the reason we think it
-        # did.
-        #
-        # The binaries are located by asking cargo where it put them, not by
-        # looking in `target/debug/deps`. A nightly moved test executables to
-        # `<target>/build/<package>/<hash>/out/` (the split build-dir layout)
-        # while this job kept its `find`, which then matched nothing at all:
-        # the assertion had already stopped checking anything and started
-        # failing with "no nuvai_mkl test binary found" on every run —
-        # including on `main` (runs 35538873005 and 35553627540). Cargo's own
-        # report is layout-independent, and it names the binaries *this* build
-        # produced, so a stale dynamic artifact in a restored cache cannot be
-        # picked up and reported as a static-link failure.
+      - name: verify the dynamic path really is dynamic
+        # The mirror of `x86_64-linux`'s check, and the reason both exist: a
+        # feature that silently stopped selecting its arm would otherwise leave
+        # one of the two jobs passing for the wrong reason. `libmkl_rt` in
+        # DT_NEEDED is the direct evidence that `dynamic` is what was built.
         run: |
-          bins=$(cargo test --workspace --features static --no-run --message-format=json 2>/dev/null \
+          bins=$(cargo test --workspace --features dynamic --no-run --message-format=json 2>/dev/null \
             | grep -F 'crates/nuvai-mkl/Cargo.toml' \
             | grep -oE '"executable":"[^"]*"' | cut -d'"' -f4)
           if [ -z "$bins" ]; then
@@ -245,9 +272,9 @@ jobs:
           fi
           for bin in $bins; do
             echo "checking $bin"
-            ldd "$bin"
-            if ldd "$bin" | grep -qE 'libmkl_rt|libiomp5|libomp\.so'; then
-              echo "::error::$bin still links a dynamic MKL/OpenMP runtime library"
+            readelf -d "$bin" | grep -E 'NEEDED|RUNPATH'
+            if ! readelf -d "$bin" | grep -q 'libmkl_rt'; then
+              echo "::error::$bin does not link libmkl_rt, but this job passes --features dynamic — the opt-in (#72) is not in effect"
               exit 1
             fi
           done
@@ -256,14 +283,23 @@ jobs:
   # here builds this repository's own targets, and Cargo scopes a build script's
   # `rustc-link-arg` to the emitting package's own targets — so a whole class of
   # breakage in which both link paths worked here and neither worked for a crate
-  # that merely depended on `nuvai-mkl` passed every one of them. These two
+  # that merely depended on `nuvai-mkl` passed every one of them. These three
   # fixtures are the missing check: separate workspaces, depending on
-  # `crates/nuvai-mkl` by path, each building and *running* a binary.
+  # `crates/nuvai-mkl` by path, each building and — the last one excepted, by
+  # design — *running* a binary.
   #
-  # `dependency-only` declares no link plumbing at all and must work under
-  # `static` (the fix); `build-script-helper` covers the dynamic path, where an
-  # executable's rpath cannot be emitted by anything but its own build script,
-  # and re-runs under `static`, where that same call emits nothing.
+  # Three fixtures, four runs, and between them the whole link-mode matrix:
+  #
+  # * `dependency-only` declares no link plumbing *and no feature*, which since
+  #   #72 is the default static link — the case the issue filed, and the one
+  #   that used to link and then fail at start-up.
+  # * `build-script-helper` covers the `dynamic` opt-in, where an executable's
+  #   rpath cannot be emitted by anything but its own build script, and re-runs
+  #   under `static` (spelled out) where that same call emits nothing.
+  # * `dynamic-no-plumbing` is the negative: `dynamic` with no build script must
+  #   build with a warning and must *not* start. Asserting the failure is the
+  #   point — it is the documented contract for that combination, and #72 is
+  #   what it costs when the failure arrives silent instead.
   x86_64-linux-downstream:
     name: x86_64-unknown-linux-gnu (downstream consumers)
     runs-on: ubuntu-latest
@@ -278,24 +314,77 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Both the dynamic `mkl` package and the ~130 MB `mkl-static` one, since
-      # the three runs below cross between them. Same key shape as the static
-      # job above, and same invalidation: a change to the acquisition is what
-      # changes which archives are fetched.
+      # Both the `mkl-static` and the dynamic `mkl` package, since the runs
+      # below cross between them. Same key shape as the two jobs above, and
+      # same invalidation: a change to the acquisition is what changes which
+      # archives are fetched.
       - name: Cache the conda-forge MKL acquisition
         uses: actions/cache@v4
         with:
           path: ~/.cache/nuvai-mkl
           key: nuvai-mkl-conda-consumers-linux-${{ hashFiles('crates/nuvai-mkl-src/src/acquire.rs') }}
 
-      - name: dependency-only consumer, static — no build script, nothing configured
-        run: cargo run --manifest-path consumers/dependency-only/Cargo.toml
-
-      - name: build-script-helper consumer, dynamic
-        run: cargo run --manifest-path consumers/build-script-helper/Cargo.toml
+      # The default, and #72's regression guard: no build script, no
+      # `[build-dependencies]`, no `.cargo/config.toml`, no `RUSTFLAGS`, no
+      # feature — and the static link must still be what this gets. The warning
+      # check is the other half: a `dynamic` warning on this path would mean the
+      # static default had stopped being reached, which is the same defect seen
+      # from the other side.
+      - name: dependency-only consumer, default — no build script, nothing configured
+        run: |
+          set -o pipefail
+          cargo run --manifest-path consumers/dependency-only/Cargo.toml 2>&1 | tee /tmp/dependency-only.log
+          if grep -q 'linking the dynamic oneMKL runtime' /tmp/dependency-only.log; then
+            echo "::error::the default build took the dynamic path — #72's static default is not in effect"
+            exit 1
+          fi
 
       - name: build-script-helper consumer, static — the same call emits nothing
         run: cargo run --manifest-path consumers/build-script-helper/Cargo.toml --features static
+
+      # The `dynamic` opt-in with its arguments supplied: this is the
+      # threaded `mkl_rt` path working, and the warning it prints is expected
+      # here — it is emitted for the opt-in, at build time, which is the half of
+      # #72 that is about *when* the requirement is disclosed.
+      - name: build-script-helper consumer, dynamic
+        run: |
+          set -o pipefail
+          cargo run --manifest-path consumers/build-script-helper/Cargo.toml --features dynamic 2>&1 | tee /tmp/build-script-helper.log
+          if ! grep -q 'linking the dynamic oneMKL runtime' /tmp/build-script-helper.log; then
+            echo "::error::the dynamic opt-in built without the warning that says what its binaries need"
+            exit 1
+          fi
+
+      # The negative fixture: `dynamic` with no plumbing must build with that
+      # same warning and must not start. Run in a fresh target dir so the build
+      # script certainly re-runs and prints it.
+      #
+      # The binary is executed directly rather than through `cargo run` because
+      # the failure is the loader's, and `cargo run` would be one more process
+      # between the two — the assertion is that the *binary* cannot start.
+      - name: dynamic-no-plumbing consumer — warns, then fails to start
+        run: |
+          set -o pipefail
+          # `Swatinem/rust-cache` caches the root workspace only, so this one is
+          # cold on every run anyway — the `rm` is what makes the warning
+          # assertion below deterministic rather than dependent on that.
+          rm -rf consumers/dynamic-no-plumbing/target
+          cargo build --manifest-path consumers/dynamic-no-plumbing/Cargo.toml 2>&1 | tee /tmp/no-plumbing.log
+          if ! grep -q 'linking the dynamic oneMKL runtime' /tmp/no-plumbing.log; then
+            echo "::error::no warning on the dynamic path — #72's disclosure is missing"
+            exit 1
+          fi
+
+          bin=consumers/dynamic-no-plumbing/target/debug/nuvai-mkl-consumer-dynamic-no-plumbing
+          if out=$("$bin" 2>&1); then
+            echo "::error::$bin started, but this combination is documented as unable to (no runtime search path — ADR-0006)"
+            exit 1
+          fi
+          echo "$out"
+          if ! echo "$out" | grep -q 'libmkl_rt.so.3: cannot open shared object file'; then
+            echo "::error::$bin failed for a reason other than the documented one"
+            exit 1
+          fi
 
   # x86_64 Windows MSVC: Intel oneMKL acquired by nuvai-mkl-src at build time
   # (conda-forge download into %USERPROFILE%\.cache\nuvai-mkl — HOME is commonly

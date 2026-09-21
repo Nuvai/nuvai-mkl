@@ -1,0 +1,31 @@
+[package]
+name = "nuvai-mkl-consumer-dynamic-no-plumbing"
+description = "Fixture: the `dynamic` opt-in with no link plumbing — builds, warns, and must not start (#72)"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+# Its own workspace, for the same reason as the other two fixtures: this one
+# pins a feature selection, and a member of the root workspace would have it
+# unified with the workspace's.
+[workspace]
+
+[dependencies]
+# The one remaining broken integration, kept as a fixture rather than fixed,
+# because it is not fixable: `dynamic` links the threaded `mkl_rt` dispatcher,
+# whose shared objects live in the acquisition cache, and no Cargo directive can
+# put a runtime search path on a *dependent's* binary (ADR-0006 — measured, not
+# assumed: a propagated `rustc-link-search` reaches the link line as `-L` and
+# never as `-Wl,-rpath`). A consumer that wants `dynamic` must supply the
+# arguments, which is what `../build-script-helper` does.
+#
+# So what this fixture asserts is the *diagnosis*, not a success: that the build
+# says so — `nuvai-mkl-src`'s build script emits the `dynamic` warning — and
+# that the binary fails the way the warning says it will, at start-up, naming
+# the loader rather than this crate. Without it, a later change could make that
+# failure quieter or later and no test would notice; #72 is what that costs.
+#
+# `[build-dependencies]` is deliberately absent along with `build.rs`: the
+# metadata a build script would read is not what is missing here, the rpath is.
+nuvai-mkl = { path = "../../crates/nuvai-mkl", default-features = false, features = ["dynamic"] }

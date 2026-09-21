@@ -75,11 +75,15 @@ const LINUX_LLVM_OPENMP: &str = "llvm-openmp-22.1.8-h4922eb0_0.conda";
 const LINUX_LLVM_OPENMP_SHA256: &str =
     "a37aba21b85800af1e7c5b04ba76abab96b6e591eedf99dc6e4df83b0fefd7a5";
 
-// Static linking (`static` feature, x86_64 Linux only — ADR-0005). conda-forge's
-// `mkl` package ships only the dynamic runtime dispatcher (`libmkl_rt.so`); the
-// static archives (`libmkl_intel_lp64.a`, `libmkl_sequential.a`,
-// `libmkl_core.a`, …) ship in a separate, much larger `mkl-static` package
-// (~530 MB uncompressed for `libmkl_core.a` alone). `mkl-static` also declares
+// Static linking (the default on x86_64 Linux — ADR-0005, ADR-0007).
+// conda-forge's `mkl` package ships only the dynamic runtime dispatcher
+// (`libmkl_rt.so`); the static archives (`libmkl_intel_lp64.a`,
+// `libmkl_sequential.a`, `libmkl_core.a`, …) ship in a separate `mkl-static`
+// package, which is much larger *uncompressed* (~530 MB for `libmkl_core.a`
+// alone) but — the part ADR-0005 had backwards, and ADR-0007 corrects — smaller
+// to download than `mkl`: 124 MB against 136 MB compressed, because `mkl` also
+// ships the four threading layers, the ILP64/GNU variants and the
+// ScaLAPACK/BLAS95/LAPACK95 archives. `mkl-static` also declares
 // a conda-level dependency on `tbb`, but that is for its `libmkl_tbb_thread.a`
 // threading layer, which this crate does not link — `emit_intel_mkl_static`
 // uses `libmkl_sequential.a` instead, so no TBB/OpenMP runtime is needed at
@@ -103,17 +107,37 @@ fn target_arch() -> String {
     env::var("CARGO_CFG_TARGET_ARCH").expect("Cargo sets CARGO_CFG_TARGET_ARCH for build scripts")
 }
 
-/// Whether the `static` feature is enabled on `nuvai-mkl-src`.
+/// Whether a Cargo feature is enabled on the unit this build script belongs to.
 ///
-/// Read from `CARGO_FEATURE_STATIC` rather than `cfg!(feature = "static")`: a
-/// build script's `cfg!` reports its own (host-compiled) features, which for a
-/// *library* feature happen to match what a dependent asked for — Cargo unifies
-/// feature flags across one crate's build-script and library units — but
-/// reading the env var directly keeps this file consistent with the rest of
-/// its target/feature detection, which is careful to never let a build
+/// Read from `CARGO_FEATURE_<NAME>` rather than `cfg!(feature = …)`: a build
+/// script's `cfg!` reports its own (host-compiled) features, which for a
+/// *library* feature of the same unit happen to match what a dependent asked
+/// for — but reading the env var directly keeps this file consistent with the
+/// rest of its target/feature detection, which is careful to never let a build
 /// script's `cfg!` stand in for the target it is building for.
+///
+/// Note that "the same unit" is load-bearing, and is why the wrapper crates
+/// carry their target-gated `static` edge under `[build-dependencies]` as well
+/// as `[dependencies]` (#72): Cargo builds a host unit and a target unit of this
+/// crate, one per dependency kind, and resolver "2" does **not** unify features
+/// across them, so each unit's build script reads its own answer here.
+///
+/// `-` becomes `_` in the variable name (Cargo's rule), which no feature of
+/// this crate currently needs.
+fn feature_enabled(name: &str) -> bool {
+    env::var(format!("CARGO_FEATURE_{name}")).is_ok()
+}
+
+/// Whether this build links oneMKL **statically**, i.e. the resolved
+/// static-vs-dynamic choice rather than the raw feature.
+///
+/// `static` is the default on `x86_64-unknown-linux-gnu` (#72): the wrapper
+/// crates enable it from a target-gated dependency edge, so this reads *on*
+/// for a consumer that declared nothing. `dynamic` is the explicit opt-out and
+/// wins over it — the rule itself is [`static_link_selected`], which lives in
+/// `backend.rs` so that it is testable without a build script.
 fn wants_static_link() -> bool {
-    env::var("CARGO_FEATURE_STATIC").is_ok()
+    static_link_selected(feature_enabled("STATIC"), feature_enabled("DYNAMIC"))
 }
 
 /// Locate MKL: a system oneAPI install first, then download from conda-forge.

@@ -40,9 +40,13 @@
 //! }
 //! ```
 //!
-//! With the `static` feature it emits nothing — a statically linked binary has
-//! no shared object to point an rpath at — so a static consumer needs no build
-//! script and no build-dependency at all (#70).
+//! Under the static link it emits nothing — a statically linked binary has no
+//! shared object to point an rpath at — so a static consumer needs no build
+//! script and no build-dependency at all (#70). Since #72 that is the *default*
+//! on `x86_64-unknown-linux-gnu`, and the `dynamic` feature is the opt-out that
+//! brings the two entries above back: it links the threaded `mkl_rt` dispatcher
+//! instead, whose binaries need a runtime search path no dependency can supply
+//! them.
 //!
 //! The acquisition above happens in the **build script**, not in this library:
 //! it needs `ureq`/`zip`/`zstd`/`tar`/`sha2`, which are build-dependencies so
@@ -55,7 +59,7 @@
 //!
 //! | Target | Backend |
 //! |---|---|
-//! | `x86_64-unknown-linux-gnu` | Intel oneMKL — download (conda-forge) or system |
+//! | `x86_64-unknown-linux-gnu` | Intel oneMKL — download (conda-forge) or system; static by default, `dynamic` for the threaded `mkl_rt` dispatcher (#72) |
 //! | `x86_64-pc-windows-msvc` | Intel oneMKL — conda-forge `mkl` + `mkl-include` + `mkl-devel` + `llvm-openmp` + `tbb` (links `mkl_rt` → `mkl_rt.3.dll`; runtime DLLs `libiomp5md.dll`/`tbb12.dll` on `PATH`), or system oneAPI (`MKLROOT`; runtime DLL dir on `PATH`) |
 //! | `x86_64-apple-darwin` | unsupported (Intel ended macOS oneMKL after 2023.2.0) |
 //! | `aarch64-apple-darwin` (Apple Silicon) | Accelerate (default) or OpenBLAS |
@@ -74,3 +78,33 @@
 include!("mkl_info.rs");
 include!("backend.rs");
 include!("link_args.rs");
+
+// `static` (ADR-0005) links Intel oneMKL's archives directly, and only
+// `x86_64-unknown-linux-gnu` can: there is no `mkl-static`-equivalent conda
+// package for Windows, and Accelerate/OpenBLAS have no static form to switch
+// to. Reject every other target at compile time rather than let the feature
+// silently fall back to a dynamic link the caller opted out of — selection is
+// explicit, never silent (ADR-0003).
+//
+// It is checked *here*, in the crate root, rather than beside the other backend
+// guards in `backend.rs`, and that is not a matter of taste: `backend.rs` is
+// `include!`d by `build.rs` too, and a build script is compiled for the *host*
+// while carrying the features of the unit it belongs to. Since #72 `static`
+// reaches this crate from the wrapper crates' target-gated edge rather than
+// from the caller, so a guard in that file fired in the *build-script*
+// compilation of a cross build whose target is supported and whose host is not
+// — `cargo doc --target x86_64-unknown-linux-gnu` from macOS, which is how
+// docs.rs's own configuration is reproduced locally, and `cargo check` of the
+// same shape. The library target is the one whose `cfg` describes the target,
+// so it is the one that can decide this; the build script answers the same
+// question for itself in `build.rs`, keyed on `HOST`.
+#[cfg(all(
+    feature = "static",
+    not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))
+))]
+compile_error!(
+    "nuvai-mkl-src: the `static` feature is only supported on \
+     x86_64-unknown-linux-gnu — Windows has no static-archive conda package, \
+     and Accelerate/OpenBLAS (the aarch64 fallbacks) have no static form to \
+     switch to. Disable `static` for this target."
+);

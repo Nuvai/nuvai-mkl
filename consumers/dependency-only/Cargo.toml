@@ -1,6 +1,6 @@
 [package]
 name = "nuvai-mkl-consumer-dependency-only"
-description = "Fixture: a downstream crate that links and runs on the dependency alone (#70)"
+description = "Fixture: a downstream crate that links and runs on the dependency alone (#70, #72)"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.99"
@@ -16,9 +16,19 @@ publish = false
 [workspace]
 
 [dependencies]
-# The integration #70 asks for, verbatim: no build script, no
-# `[build-dependencies]`, no `.cargo/config.toml`, no `RUSTFLAGS`. `static` is
-# what makes it work — the group link over Intel's three archives is a linker
-# script, which is a `-l` input, so it propagates to this crate's binaries the
-# way `rustc-link-arg` never could.
-nuvai-mkl = { path = "../../crates/nuvai-mkl", default-features = false, features = ["static"] }
+# The integration #70 and #72 ask for, verbatim: no build script, no
+# `[build-dependencies]`, no `.cargo/config.toml`, no `RUSTFLAGS` — and, since
+# #72, no feature either. `static` is what makes it work: the group link over
+# Intel's three archives is a linker script, which is a `-l` input, so it
+# propagates to this crate's binaries the way `rustc-link-arg` never could
+# (#70) — and it is what a bare dependency now *gets*, because `nuvai-mkl`
+# enables it from a target-gated edge rather than waiting to be asked (#72).
+#
+# Spelling `features = ["static"]` here would also work and would change
+# nothing: it names the thing the edge above already requested. Leaving it off
+# is the point of the fixture — it is the case issue #72 filed, in which a
+# consumer who declares nothing but the dependency gets a binary that links and
+# runs. The dynamic path is the `dynamic` feature, and it is covered by
+# `../build-script-helper` (which supplies the arguments it needs) and by
+# `../dynamic-no-plumbing` (which does not).
+nuvai-mkl = { path = "../../crates/nuvai-mkl", default-features = false }

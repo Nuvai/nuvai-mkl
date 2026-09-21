@@ -4,6 +4,12 @@
 - **Date:** 2026-09-21
 - **Task:** #70 — `rustc-link-arg` directives do not reach downstream consumers (static fails to link, dynamic fails at runtime)
 - **Amends:** ADR-0005 decisions 5 and 6; ADR-0003 decision 7 (the aarch64 rpath note)
+- **Amended by:** ADR-0007 (#72) — decision 6 below, the table of what a
+  downstream consumer must write. Its dynamic row still holds, but the link mode
+  it is the opt-in *to* is now the default on `x86_64-unknown-linux-gnu`, so a
+  consumer who writes nothing gets the row above it. The per-binary arguments
+  themselves, and the reason they cannot propagate, are unchanged — ADR-0007
+  closes the remaining "is there a Cargo channel?" question by measurement.
 - **Deciders:** nuvai-mkl maintainers
 
 ## Context

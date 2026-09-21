@@ -64,7 +64,7 @@ native backend behind the same typed API (ADR-0003) — or returns
 
 Selection is **explicit, never silent** (ADR-0003 decision 2):
 
-- On `x86_64` Linux/Windows targets the backend is always Intel oneMKL; no feature changes that. On `x86_64-unknown-linux-gnu` the `static` feature changes *how* it links — see [Static linking](#static-linking).
+- On `x86_64` Linux/Windows targets the backend is always Intel oneMKL; no feature changes that. On `x86_64-unknown-linux-gnu` the `dynamic` feature changes *how* it links — the default is the static link, which needs nothing configured — see [Link modes on x86_64 Linux](#link-modes-on-x86_64-linux).
 - On `aarch64-unknown-linux-gnu` the backend is always **OpenBLAS** (`cfg(target_arch = "aarch64")` + `target_os = "linux"`); the `accelerate`/`openblas` features are no-ops there because there is no second backend to choose from.
 - On `aarch64-apple-darwin` the non-MKL path is mandatory (`cfg(target_arch = "aarch64")`); the *choice* of backend is a Cargo feature on `nuvai-mkl`:
 
@@ -81,7 +81,7 @@ Selection is **explicit, never silent** (ADR-0003 decision 2):
 
 | Target | Backend | Status |
 |---|---|---|
-| `x86_64-unknown-linux-gnu` | Intel oneMKL — conda-forge `mkl` + `mkl-include`, or system oneAPI (`MKLROOT`) | ✅ |
+| `x86_64-unknown-linux-gnu` | Intel oneMKL — **statically** by default, from conda-forge `mkl-static` + `mkl-include` or a system oneAPI install (`MKLROOT`); `features = ["dynamic"]` links `mkl_rt` (+ `mkl` + `llvm-openmp` from conda-forge) instead — see [Link modes on x86_64 Linux](#link-modes-on-x86_64-linux) | ✅ |
 | `x86_64-pc-windows-msvc` | Intel oneMKL — conda-forge `mkl` + `mkl-include` + `mkl-devel` + `llvm-openmp` + `tbb` (links `mkl_rt` → `mkl_rt.3.dll`; runtime DLLs `libiomp5md.dll`/`tbb12.dll` on `PATH`), or system oneAPI (`MKLROOT`) | ✅ |
 | `x86_64-apple-darwin` | — | ❌ unsupported (Intel ended macOS oneMKL after 2023.2.0) |
 | `aarch64-apple-darwin` (Apple Silicon, macOS 12.0+) | Accelerate + `rand` (`accelerate` feature, default) | ✅ |
@@ -97,30 +97,55 @@ beside the executable) before `cargo run` / `cargo test`. The system oneAPI path
 on Windows is `MKLROOT`-only (the well-known `/opt/intel/oneapi/…` Unix paths do
 not exist there).
 
-## Static linking
+## Link modes on x86_64 Linux
 
-`x86_64-unknown-linux-gnu` only, opt-in (ADR-0005):
+`x86_64-unknown-linux-gnu` has two link modes, and the choice is visible in the
+manifest either way (ADR-0005, ADR-0007):
 
-```toml
-nuvai-mkl = { git = "https://github.com/Nuvai/nuvai-mkl", features = ["static"] }
+| Mode | How to get it | What it links | MKL's own threading |
+|---|---|---|---|
+| **static** | nothing — it is the default | `libmkl_intel_lp64.a` + `libmkl_sequential.a` + `libmkl_core.a`, through a generated linker script | no (sequential layer) |
+| **dynamic** | `features = ["dynamic"]` | `mkl_rt` — the runtime dispatcher, plus the OpenMP runtime it loads | yes |
+
+**Static is the default because it is the mode that needs nothing from you.**
+The binary has no runtime dependency on `libmkl_rt.so`/`libiomp5.so`, so it
+starts wherever it is copied to — no rpath, no `LD_LIBRARY_PATH`, no
+`ld.so.conf.d` entry — and a crate that declares nothing but the dependency
+links *and runs* (issue #72). The price is MKL's internal threading and a larger
+binary; the download is not one: conda-forge's `mkl-static` (~130 MB compressed)
+is slightly smaller than the `mkl` package the dynamic mode uses (~143 MB).
+
+**`dynamic` is the opt-in, and it is opt-in for a reason.** It is the only way
+to get MKL's own OpenMP threading (conda-forge's `llvm-openmp` ships no static
+archive, so the threaded layer cannot be linked statically). It is also the mode
+whose *binaries* have a requirement this crate cannot satisfy for them: they
+must find `libmkl_rt.so.3` at load time, and no Cargo directive can put a
+runtime search path on a dependent's binary — `rustc-link-arg` does not
+propagate, and a propagated `rustc-link-search` reaches the link line as `-L`
+and never as `-Wl,-rpath` (ADR-0006; measured, not assumed). So a consumer that
+selects `dynamic` must supply the per-binary arguments itself — see [Linking
+from another crate](#linking-from-another-crate) — or the build succeeds and the
+binary refuses to start:
+
+```
+error while loading shared libraries: libmkl_rt.so.3: cannot open shared object file
 ```
 
-This links Intel oneMKL's static archives (`libmkl_intel_lp64.a` +
-`libmkl_sequential.a` + `libmkl_core.a`, the single-threaded/sequential
-threading layer) instead of the dynamic runtime dispatcher (`mkl_rt`). The
-resulting binary has no runtime dependency on `libmkl_rt.so`/`libiomp5.so` —
-useful for container/Lambda-style distribution where a self-contained binary
-avoids `LD_LIBRARY_PATH`/rpath setup, at the cost of a larger download
-(conda-forge's `mkl-static` package is ~130 MB compressed, versus a few MB for
-the dynamic `mkl` package used by default) and a larger binary. `static` is
-unsupported (compile error) on every other target — Windows has no
-static-archive package wired up yet, and Accelerate/OpenBLAS have no static
-form to switch to.
+`nuvai-mkl-src`'s build script prints a `cargo:warning` saying exactly that on
+the `dynamic` path, so the requirement arrives at build time rather than as a
+loader error the first time the binary runs. Making `dynamic` the *caller's*
+declaration is what turns that failure into a documented contract: before #72
+the same failure was the default, and silent.
+
+`static` is unsupported (compile error) on every other target — Windows has no
+static-archive package wired up yet, and Accelerate/OpenBLAS have no static form
+to switch to. `dynamic` is inert there: every one of those backends already *is*
+dynamic, so it asks for nothing that does not happen anyway.
 
 ## Requirements
 
 - Rust (built against **1.99 nightly**, edition 2024).
-- First build downloads ~140 MB of MKL into `~/.cache/nuvai-mkl/` (cached thereafter; on Windows the cache falls back to `%USERPROFILE%\.cache\nuvai-mkl` since `HOME` is often unset, and the acquisition also fetches `mkl-devel`, `llvm-openmp` and `tbb`).
+- First build downloads MKL into `~/.cache/nuvai-mkl/` (cached thereafter) — ~130 MB on `x86_64-unknown-linux-gnu` for the default static link (`mkl-static` + `mkl-include`), or ~150 MB if you select `dynamic` (`mkl` + `mkl-include` + `llvm-openmp`). On Windows the cache falls back to `%USERPROFILE%\.cache\nuvai-mkl` since `HOME` is often unset, and the acquisition also fetches `mkl-devel`, `llvm-openmp` and `tbb`.
 - `libclang` + `bindgen` for regenerating FFI bindings on Intel targets (LLVM on Windows, `libclang-dev` on Linux). The ARM64 aarch64 targets use a hand-written FFI surface and need no libclang.
 - On `aarch64-apple-darwin`, **macOS 12.0+** is required: the FFT backend uses vDSP's interleaved-complex DFT (`vDSP_DFT_Interleaved_*`), which is `API_AVAILABLE(macos(12.0))`.
 - On `aarch64-unknown-linux-gnu`, OpenBLAS is the sole backend: install `libopenblas-dev` (system default search path), or point `OPENBLAS_ROOT` at a conda/pip install — `nuvai-mkl-src` adds its `lib` dir to the propagated link-search path, and `nuvai_mkl_src::emit_binary_link_args()` supplies the matching runtime rpath wherever the binary is linked from (see [Linking from another crate](#linking-from-another-crate)).
@@ -128,22 +153,33 @@ form to switch to.
 ## Linking from another crate
 
 Everything `nuvai-mkl-src` can express as a link *library* or a *search path*
-propagates to a dependent's binaries on its own — on `static` that includes the
-group link over Intel's archives, which is why a plain dependency is enough.
-What cannot propagate is an executable's **runtime rpath** and the object that
-keeps the OpenMP runtime in its `DT_NEEDED` under `mold` (#44): Cargo scopes
-`cargo:rustc-link-arg` to the targets of the package that emits it, and no
-directive can put an rpath on another package's binary (ADR-0006). The two link
-modes therefore differ:
+propagates to a dependent's binaries on its own — on the static link that
+includes the group link over Intel's archives, which is why a plain dependency
+is enough. What cannot propagate is an executable's **runtime rpath** and the
+object that keeps the OpenMP runtime in its `DT_NEEDED` under `mold` (#44):
+Cargo scopes `cargo:rustc-link-arg` to the targets of the package that emits it,
+and no directive can put an rpath on another package's binary (ADR-0006). The
+two link modes therefore differ — and since #72 they are a **default** and an
+**opt-in** rather than a default and a workaround:
 
 | Link mode | What a depending crate needs |
 |---|---|
-| `static` | **nothing.** `nuvai-mkl = { …, features = ["static"] }` links and runs |
-| dynamic (default) | the two manifest entries below, plus one line of `build.rs` |
+| static (**default**, no feature) | **nothing.** `nuvai-mkl = { …, default-features = false }` links and runs |
+| `dynamic` | the two manifest entries below, plus one line of `build.rs` |
+
+```toml
+# The default: nothing to declare, nothing to configure.
+nuvai-mkl = { git = "https://github.com/Nuvai/nuvai-mkl", tag = "v0.1.0" }
+```
+
+Under `dynamic`, the two entries below are what makes the one-line build script
+possible at all — `DEP_MKL_*` reaches a build script through a normal
+`[dependencies]` edge only, and a build script can only *use* code from
+`[build-dependencies]`:
 
 ```toml
 [dependencies]
-nuvai-mkl = { git = "https://github.com/Nuvai/nuvai-mkl", tag = "v0.1.0" }
+nuvai-mkl = { git = "https://github.com/Nuvai/nuvai-mkl", tag = "v0.1.0", features = ["dynamic"] }
 # For the DEP_MKL_* metadata the build script below reads. Cargo forwards a
 # `links` provider's metadata through this table only — a [build-dependencies]
 # entry on its own receives none of it (ADR-0006).
@@ -162,14 +198,20 @@ fn main() {
 ```
 
 Without that call the binary links and then fails at start-up with
-`libmkl_rt.so.3: cannot open shared object file`. Putting the MKL directories on
-`LD_LIBRARY_PATH` (or `PATH` on Windows) wherever the binary runs is the
-alternative, and is what consumers had to do before.
+`libmkl_rt.so.3: cannot open shared object file` — `nuvai-mkl-src`'s build script
+warns about that at build time, and the failure is exactly what
+`consumers/dynamic-no-plumbing/` asserts. Putting the MKL and OpenMP `lib`
+directories on `LD_LIBRARY_PATH` wherever the binary runs is the alternative to
+the build script, and it is what this crate's consumers had to do before #70.
+If you do not need MKL's own threading, dropping `dynamic` is the third option:
+the static link needs none of this.
 
 Both modes are exercised end to end by the crates in
 [`consumers/`](consumers/README.md) — a *separate* workspace, because the
 distinction is between packages — and by the `x86_64-linux-downstream` CI job,
-which builds and runs a downstream binary against this repository's crates.
+which builds and runs a downstream binary against this repository's crates, and
+asserts that the one combination with no answer (dynamic, no plumbing) fails the
+way it is documented to.
 
 ## Installation
 
@@ -181,9 +223,10 @@ and `backend_tag()` are public if you want to report the active backend yourself
 The workspace declares `rust-version = "1.99"` (edition 2024), so Cargo refuses an
 older toolchain; today that means a **nightly** toolchain. Nothing pins one for
 you — there is no `rust-toolchain.toml` — so pin it in your own project. See
-[Requirements](#requirements) for the per-target prerequisites, and expect a
-~140 MB oneMKL download into `~/.cache/nuvai-mkl/` on the Intel targets the first
-time you build.
+[Requirements](#requirements) for the per-target prerequisites, and expect an
+MKL download into `~/.cache/nuvai-mkl/` on the Intel targets the first time you
+build — ~130 MB for the default static link on `x86_64-unknown-linux-gnu`, and
+more on Windows, which fetches five packages.
 
 ### Git dependency (recommended)
 

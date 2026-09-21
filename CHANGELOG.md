@@ -7,7 +7,56 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ## [Unreleased]
 
+### Changed
+
+- **`x86_64-unknown-linux-gnu` links oneMKL statically by default** (issue #72).
+  The dynamic runtime dispatcher (`mkl_rt`) is now the `dynamic` opt-in. This is
+  a **breaking behaviour change** for a consumer on that target that declared
+  nothing: it acquires `mkl-static` instead of `mkl`, and — unless it selects
+  `dynamic` — MKL's own OpenMP threading is no longer used, because the static
+  link takes the `mkl_sequential` threading layer (ADR-0005 decision 4; there is
+  no static OpenMP runtime in the acquisition to link the threaded layer
+  against). What it buys is that the default *works*: a crate that declares
+  nothing but the dependency now links **and runs**, where before it compiled and
+  then died at start-up with `libmkl_rt.so.3: cannot open shared object file`.
+  Select `dynamic` to get the old link mode back, at the cost of the per-binary
+  link arguments the next entry describes.
+
+  The mechanism is a target-gated dependency edge in `nuvai-mkl` and
+  `nuvai-mkl-sys` (`cfg(all(target_os = "linux", target_arch = "x86_64",
+  target_env = "gnu"))` requesting `nuvai-mkl-src/static`), under both
+  `dependencies` and `build-dependencies`: Cargo merges a `[target.…]` entry with
+  the plain one for the same package, but builds a host and a target unit of
+  `nuvai-mkl-src` from the two tables and does not unify features across them.
+  Features are additive, so the opt-out is a feature of its own (`dynamic`) and
+  the resolution is a pure, unit-tested function
+  (`nuvai_mkl_src::static_link_selected`). ADR-0007 records the whole decision,
+  including the measurement that ADR-0005's download-size premise was wrong —
+  `mkl-static` is ~130 MB compressed against the dynamic package's ~143 MB, so the
+  real cost of the default is the threading, not the bytes.
+
+- **The `dynamic` path says what it needs, at build time** (issue #72).
+  `nuvai-mkl-src`'s build script emits a `cargo:warning` on the dynamic
+  `x86_64-unknown-linux-gnu` arm naming the two ways to satisfy it — a `build.rs`
+  calling `nuvai_mkl_src::emit_binary_link_args()`, or `LD_LIBRARY_PATH` where
+  the binary runs — and noting that dropping `dynamic` avoids the question. The
+  failure it describes is otherwise silent until the first run, and names the
+  dynamic loader rather than this crate.
+
 ### Fixed
+
+- The second gap reported in issue #72 was re-tested on the current revision and
+  is real: supplying the rpath by hand surfaces
+  `libmkl_intel_thread.so.3: undefined symbol: __kmpc_global_thread_num`, exactly
+  as the issue suspected but could not reach. Both halves are the same missing
+  per-binary arguments — the rpath *and* the object that keeps `libiomp5` in
+  DT_NEEDED (`--as-needed` drops a runtime nothing in the executable references,
+  and `libmkl_intel_thread.so.3`'s `omp_*` references are unresolved in a
+  *shared* object, which is not a link error). So both are fixed by the same
+  one-line build script, and neither is reachable on the default path any more.
+  `consumers/` now asserts the pair: `build-script-helper` (arguments supplied)
+  must run, `dynamic-no-plumbing` (arguments omitted) must warn and then fail to
+  start.
 
 - Link directives now reach a **downstream** crate, not just this repository's
   own binaries (issue #70). Both link paths worked here and broke in a crate
@@ -61,6 +110,15 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   packages, and `cargo test --workspace` builds a member's targets as the wrong
   package and unifies its features with the workspace's. Verified on x86_64
   Linux with both `ld` and `mold`.
+
+- `consumers/dynamic-no-plumbing/` — the negative of that pair (issue #72): the
+  `dynamic` opt-in with no link plumbing, which must build with the warning above
+  and must **not** start. It is the only fixture whose expected outcome is a
+  failure, and the reason to keep one is that a failure mode is only a documented
+  contract while something asserts it is still the failure it is documented as.
+
+- ADR-0007 (static by default on `x86_64-unknown-linux-gnu`, `dynamic` as the
+  opt-in), amending ADR-0005 decision 1 and ADR-0006 decision 6.
 
 - ADR-0006 (propagating link directives), amending ADR-0005 decisions 5 and 6
   and ADR-0003 decision 7.

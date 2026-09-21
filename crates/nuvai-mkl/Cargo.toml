@@ -23,8 +23,17 @@ accelerate = ["nuvai-mkl-src/accelerate"]
 openblas = ["nuvai-mkl-src/openblas"]
 # Statically link Intel oneMKL instead of linking the dynamic runtime
 # dispatcher (x86_64-unknown-linux-gnu only — ADR-0005). See
-# `nuvai-mkl-src`'s `static` feature doc for what changes and why.
+# `nuvai-mkl-src`'s `static` feature doc for what changes and why. **On by
+# default on that target** (#72) — the target-gated edge below is what enables
+# it — so naming this feature explicitly is a way to say "the default", not to
+# change it.
 static = ["nuvai-mkl-src/static"]
+# Link the dynamic `mkl_rt` dispatcher instead: the threaded path, and the
+# opt-out from the static default (#72). It is the caller's choice to make
+# because its own binaries then need a runtime search path for the acquisition
+# cache — see `nuvai-mkl-src`'s `dynamic` feature doc and the README's "Linking
+# from another crate". Inert on every other target.
+dynamic = ["nuvai-mkl-src/dynamic"]
 
 [dependencies]
 nuvai-mkl-sys = { workspace = true }
@@ -49,6 +58,38 @@ rand_distr = "0.6.0"
 # crate that can publish its path as `DEP_MKL_FORCE_OBJ`) and the propagating
 # oneMKL directives all come from there as well.
 nuvai-mkl-src = { workspace = true }
+
+# The target-gated edges that make `static` the default on the one Intel target
+# that has a static form (#72). Cargo merges a package's `[dependencies]` entry
+# with a `[target.…]` entry for the same package (verified: `cargo tree -e
+# features` shows one unit with both feature sets, not an error), so a consumer
+# that declares nothing but `nuvai-mkl` gets `nuvai-mkl-src` with `static` on —
+# on `x86_64-unknown-linux-gnu` and not elsewhere. The `target_env` term is not
+# decoration: the static archives are conda's glibc linux-64 ones, the same
+# triple `backend.rs`'s `compile_error!` and `build.rs`'s check require.
+#
+# There are two edges because Cargo builds two units of `nuvai-mkl-src` from
+# them — one per dependency kind — and resolver "2" does not unify features
+# across them. They are matched against *different* triples, which is the part
+# worth knowing: Cargo resolves a `[target.…]` table's `dependencies` against
+# the **target** being built and its `build-dependencies` against the **host**
+# (verified here: with `--target x86_64-unknown-linux-gnu` from a macOS host,
+# the normal unit got `static` from the linux table and the build-dependency
+# unit did not).
+#
+# The `[dependencies]` edge is the one whose build script publishes the
+# `DEP_MKL_*` metadata and whose link directives reach the *final* binary, so it
+# is what decides the link mode of a consumer's programs. The
+# `[build-dependencies]` edge is the one whose directives reach this crate's and
+# `nuvai-mkl-sys`'s *build-script* binaries; leaving it dynamic would make a
+# default x86_64 Linux build acquire both conda packages (`mkl` for the host
+# unit, `mkl-static` for the target unit) and link its build scripts against a
+# runtime that has to be found on the loader path at build-script run time.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))'.dependencies]
+nuvai-mkl-src = { workspace = true, features = ["static"] }
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))'.build-dependencies]
+nuvai-mkl-src = { workspace = true, features = ["static"] }
 
 # docs.rs has no network and no MKL; build with no features so the
 # docs.rs build never pulls acquisition/linking (build.rs also short-circuits on DOCS_RS).

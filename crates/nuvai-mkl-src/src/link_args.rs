@@ -56,9 +56,10 @@
 // Static linking (ADR-0005) needs none of it — the code is in the binary, so
 // there is no rpath to point at a shared object and no
 // `libmkl_intel_thread.so.3` leaving `omp_*` undefined — and [`link_args_for`]
-// returns nothing on that path. A consumer that wants no build script at all
-// should therefore select `static`; see the README's "Linking from another
-// crate".
+// returns nothing on that path. Since #72 that is the *default* on
+// `x86_64-unknown-linux-gnu`, so the two manifest entries and the one line
+// below are the price of the `dynamic` opt-in (MKL's own threading), not of
+// using this crate at all; see the README's "Linking from another crate".
 //
 // Like `src/mkl_info.rs`, this file is `include!`d into the crate root by
 // `lib.rs`, so the imports that file declares (`env`, `Path`, `PathBuf`) are
@@ -100,8 +101,9 @@ pub fn link_args_for(
         // publishes as a propagating `-l` input, and a static link has no
         // shared object to point an rpath at and no OpenMP runtime to keep
         // (the `mkl_sequential` threading layer needs none). This arm is what
-        // makes a dependency-only static consumer work with no build script of
-        // its own — the case #70 is about.
+        // makes a dependency-only consumer work with no build script of its
+        // own — the case #70 is about, and since #72 the default one: a
+        // consumer on this target reaches it by declaring nothing.
         ("linux", "x86_64") if info.is_some_and(|i| i.static_link) => Vec::new(),
         // Intel oneMKL, dynamically linked (`mkl_rt`). Everything Cargo can
         // propagate — the search paths, `-lmkl_rt`, `-liomp5`, `-ldl`,
@@ -209,9 +211,11 @@ fn acquires_mkl(target_os: &str, target_arch: &str) -> bool {
 /// ```
 ///
 /// It reads the target from `CARGO_CFG_TARGET_OS`/`CARGO_CFG_TARGET_ARCH` and
-/// the resolved install from `DEP_MKL_*`. With the `static` feature it emits
-/// nothing — a static link needs no per-binary arguments — so a static consumer
-/// needs neither the call nor either dependency entry.
+/// the resolved install from `DEP_MKL_*`. Under the static link — the default
+/// on `x86_64-unknown-linux-gnu` since #72 — it emits nothing, because a static
+/// link needs no per-binary arguments: so this call, and both manifest entries
+/// above, exist for the `dynamic` opt-in and can be dropped on the default
+/// path.
 ///
 /// # Panics
 ///
@@ -266,8 +270,9 @@ pub fn emit_binary_link_args() {
              `libmkl_rt.so.3: cannot open shared object file`. Add `nuvai-mkl-src` to \
              [dependencies] (the only edge Cargo forwards a links provider's metadata \
              through; [build-dependencies] alone does not) at the revision your \
-             nuvai-mkl dependency resolves to. If you selected the `static` feature, no \
-             per-binary link arguments are needed and this call can be removed."
+             nuvai-mkl dependency resolves to. On the default static link (no `dynamic` \
+             feature) no per-binary link arguments are needed, and this call can be \
+             removed."
         );
     }
 

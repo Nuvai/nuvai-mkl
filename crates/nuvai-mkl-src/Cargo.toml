@@ -23,13 +23,35 @@ accelerate = []
 openblas = []
 
 # Link Intel oneMKL statically instead of via the dynamic runtime dispatcher
-# (`mkl_rt`) — `x86_64-unknown-linux-gnu` only for now (ADR-0005). Off by
-# default: it acquires a much larger conda-forge package (`mkl-static`,
-# ~530 MB uncompressed for `libmkl_core.a` alone, versus a few MB for the
-# dynamic `mkl` package) and produces a correspondingly larger binary. A
-# compile error rejects this on every other target — see `backend.rs` — rather
-# than silently falling back to a dynamic link the caller did not ask for.
+# (`mkl_rt`) — `x86_64-unknown-linux-gnu` (glibc) only (ADR-0005). A compile
+# error rejects it on every other target — see `backend.rs` — rather than
+# silently falling back to a dynamic link the caller did not ask for.
+#
+# **This is the default on that target** (#72): `nuvai-mkl` and `nuvai-mkl-sys`
+# enable it from a target-gated dependency edge, so a consumer that declares
+# nothing but the dependency gets a binary that links *and runs*, with no build
+# script, no rpath and no `LD_LIBRARY_PATH`. What it costs is MKL's own
+# threading — the static link uses `mkl_sequential` (ADR-0005 decision 4), since
+# conda-forge's `llvm-openmp` ships no static archive to link the threaded layer
+# against — and a larger binary. `dynamic` below is the opt-out for callers who
+# want that threading back.
 static = []
+
+# Link the dynamic runtime dispatcher (`mkl_rt`) instead of the static
+# archives: the **opt-out** from `static`, and the only way to get MKL's own
+# OpenMP threading (#72). It is explicit because it is the path with a
+# requirement that cannot be met from here: a dependent's binary must find
+# `libmkl_rt.so.3` at load time, and no Cargo directive can put a runtime search
+# path on another package's binary (ADR-0006) — so a caller that selects it owns
+# the per-binary link arguments (`nuvai_mkl_src::emit_binary_link_args`) or an
+# `LD_LIBRARY_PATH` at run time. `nuvai-mkl-src`'s build script says so on the
+# `dynamic` path.
+#
+# Inert on every other target, where the backend is inherently dynamic
+# (Accelerate/OpenBLAS have no static form, and the Windows conda package has no
+# static archives) — unlike `static`, which asks for something those targets
+# cannot do and is therefore rejected there.
+dynamic = []
 
 # There is deliberately no `[dependencies]`. Acquisition runs entirely in
 # `build.rs`, so these are needed only to compile a build script (#24); declaring

@@ -80,23 +80,24 @@ compile_error!(
      (aarch64-unknown-linux-gnu); musl/Android/Windows/FreeBSD aarch64 have no backend."
 );
 
-// `static` (ADR-0005) links Intel oneMKL's archives directly and is only
-// acquired/emitted for `x86_64-unknown-linux-gnu` (`acquire.rs::download_mkl`,
-// `build.rs::emit_intel_mkl`) — there is no `mkl-static`-equivalent static
-// archive for the Windows conda package, and Accelerate/OpenBLAS have no
-// static form to switch to. Reject every other target at compile time rather
-// than let the feature silently fall back to a dynamic link the caller
-// explicitly opted out of. Selection is explicit, never silent (ADR-0003).
-#[cfg(all(
-    feature = "static",
-    not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))
-))]
-compile_error!(
-    "nuvai-mkl-src: the `static` feature is only supported on \
-     x86_64-unknown-linux-gnu — Windows has no static-archive conda package, \
-     and Accelerate/OpenBLAS (the aarch64 fallbacks) have no static form to \
-     switch to. Disable `static` for this target."
-);
+// `static`'s guard is deliberately **not here**, and the placement is
+// load-bearing rather than stylistic. `static` (ADR-0005) is a *target*
+// property — the archives exist for `x86_64-unknown-linux-gnu` only — but this
+// file is `include!`d by `build.rs` as well, and a build script is compiled for
+// the *host* while carrying the features of the unit it belongs to. Since #72
+// `static` arrives from the wrapper crates' target-gated edge, so in a cross
+// build whose target is supported and whose host is not — `cargo doc`/`check
+// --target x86_64-unknown-linux-gnu` from macOS, which is how docs.rs's own
+// configuration is reproduced locally — a guard here rejected the *build
+// script* for the host it happened to be compiled on. The crate root owns it
+// instead (`lib.rs`), because the library target is the one whose `cfg`
+// describes the target; the build script answers the same question for itself
+// in `build.rs`, keyed on `HOST`.
+//
+// The `dynamic` counterpart needs no guard at all: it is inert everywhere else,
+// because every other backend *is* dynamic already, so it asks for nothing that
+// does not happen anyway — unlike `static`, which asks for something those
+// targets cannot do.
 
 /// The link backend selected for the current build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +177,40 @@ pub fn backend() -> Backend {
     {
         Backend::IntelMkl
     }
+}
+
+/// Whether oneMKL is linked **statically**, decided from the two feature flags
+/// (#72).
+///
+/// The rule lives here, once, as a pure function of the pair — so the *feature*
+/// dimension is testable on every platform, whatever the host happens to be,
+/// for the same reason [`macos_aarch64_backend`] is a function of its pair
+/// rather than a `cfg!(feature = …)` read.
+///
+/// `static` is the **default** on `x86_64-unknown-linux-gnu`: the wrapper
+/// crates enable it from a target-gated dependency edge, so a consumer that
+/// declares nothing but the dependency gets a link that runs (see
+/// `static_link`'s field docs for why that is the whole of the fix).
+/// `dynamic` is the explicit **opt-out** — it restores the threaded `mkl_rt`
+/// dispatcher, whose binaries need a runtime search path that no Cargo
+/// directive can put on a *dependent's* binary (ADR-0006), so it is only ever
+/// reached by asking for it.
+///
+/// Both features on is therefore not an error but a resolved choice: `dynamic`
+/// wins, because it is the only one of the two that cannot be satisfied
+/// silently by the other. Neither feature on is the dynamic link too, and that
+/// is deliberate rather than an oversight: the default is `static` because a
+/// *dependency edge* requests it, not because a missing request means it. A
+/// rule that read "static unless `dynamic`" would be true of every target at
+/// once, including the ones where `static` is a `compile_error!` — and the
+/// build-script guard that rejects `static` off `x86_64-unknown-linux-gnu`
+/// would then reject the ordinary macOS and Windows builds.
+///
+/// (On every target but `x86_64-unknown-linux-gnu` the answer is unused either
+/// way: `static` is rejected outright by the `compile_error!` above, and every
+/// other backend is inherently dynamic.)
+pub const fn static_link_selected(feature_static: bool, feature_dynamic: bool) -> bool {
+    feature_static && !feature_dynamic
 }
 
 /// Select the link backend for an explicit target triple.
@@ -277,6 +312,32 @@ mod tests {
         assert!(neither.contains("exactly one backend feature"), "{neither}");
         let both = macos_aarch64_backend(true, true).expect_err("both backend features");
         assert!(both.contains("mutually exclusive"), "{both}");
+    }
+
+    /// The static/dynamic pair, resolved without reference to this build's own
+    /// features (#72). All four cases are pinned, because three of them are
+    /// reached in practice and each is a different caller's mistake to make:
+    /// `static` alone is the default the wrapper crates arrange from their
+    /// target-gated edge, both-on must resolve to `dynamic` rather than to
+    /// whichever arm happened to be tested first (#35's shape, one dimension
+    /// over), and neither must *not* be read as "static by default" — the
+    /// `compile_error!` above rejects `static` off one target, so a default
+    /// that applied everywhere would reject ordinary macOS and Windows builds.
+    #[test]
+    fn static_and_dynamic_resolve_for_every_feature_pair() {
+        use super::static_link_selected;
+
+        assert!(static_link_selected(true, false), "static alone is the static link");
+        assert!(
+            !static_link_selected(false, false),
+            "neither feature is the dynamic link: the static default is requested by a \
+             dependency edge, not implied by the absence of a request"
+        );
+        assert!(
+            !static_link_selected(true, true),
+            "`dynamic` is the opt-out, so it must win over the `static` the target edge supplied"
+        );
+        assert!(!static_link_selected(false, true), "dynamic alone is the dynamic link");
     }
 
     /// The build-script selector must agree with `backend()` about the pair

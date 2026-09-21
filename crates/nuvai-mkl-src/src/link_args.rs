@@ -57,7 +57,7 @@
 // there is no rpath to point at a shared object and no
 // `libmkl_intel_thread.so.3` leaving `omp_*` undefined — and [`link_args_for`]
 // returns nothing on that path. A consumer that wants no build script at all
-// should therefore select `static`; see the README's "Consuming from another
+// should therefore select `static`; see the README's "Linking from another
 // crate".
 //
 // Like `src/mkl_info.rs`, this file is `include!`d into the crate root by
@@ -76,10 +76,11 @@
 /// supplies them from the build environment.
 ///
 /// * `info` — the install `nuvai-mkl-src`'s build script published, or `None`
-///   when it could not be read (the Intel targets are the only ones that
+///   when it could not be read. The Intel targets are the only ones that
 ///   acquire anything, so `None` there means the build script calling this has
-///   no `[build-dependencies]` entry on `nuvai-mkl-src` — see
-///   [`emit_binary_link_args`], which reports that rather than failing).
+///   no `[dependencies]` entry on `nuvai-mkl-src` — the edge the metadata
+///   travels through — and [`emit_binary_link_args`] reports exactly that
+///   rather than producing link arguments from nothing.
 /// * `openblas_root` — `$OPENBLAS_ROOT`, for the aarch64-Linux fallback whose
 ///   OpenBLAS may live outside the system search path. Ignored everywhere else.
 /// * `target_os` / `target_arch` — the *target* triple's components

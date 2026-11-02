@@ -131,6 +131,36 @@ fn main() {
             // VML (vForce) and the sparse solvers (Sparse/SparseSolve) still
             // call Accelerate, so both must be linked on this path.
             if target_os == "macos" {
+                // Homebrew installs openblas keg-only, so `-lopenblas` needs an
+                // explicit search path. Prefer OPENBLAS_ROOT (conda/pip) and
+                // fall back to the Homebrew keg on Apple Silicon — but only if
+                // the keg actually exists, so a MacPorts `/opt/local`, a
+                // `/usr/local`, or a manual-build install resolves via the default
+                // search path instead of being silently shadowed by a stale
+                // package-manager path. This is a deliberate, documented exception
+                // to ADR-0003's "explicit, never silent" rule (see its decision 11):
+                // it only ever *adds* a search path for the already-selected
+                // OpenBLAS backend, never changes which backend is linked.
+                //
+                // This must be a `rustc-link-search` (not RUSTFLAGS `-L`) because
+                // Cargo does not forward RUSTFLAGS to build-script linking, and
+                // the `-lopenblas` above propagates to build scripts too. (#70
+                // moved every propagating directive here for the same reason; the
+                // per-binary rpath stays with the binary's owner, see
+                // `emit_binary_link_args` and `nuvai-mkl/build.rs`.)
+                const HOMEBREW_KEG_LIB: &str = "/opt/homebrew/opt/openblas/lib";
+                // The keg probe is an input, so re-run when the keg appears or
+                // disappears. Emitted only here: a `rerun-if-changed` on a path
+                // that does not exist makes Cargo re-run the script on *every*
+                // build, which would be pure cost on every non-macOS target.
+                println!("cargo:rerun-if-changed={HOMEBREW_KEG_LIB}");
+                if let Some(lib_dir) = openblas_root_lib_dir().or_else(|| {
+                    std::path::Path::new(HOMEBREW_KEG_LIB)
+                        .is_dir()
+                        .then(|| HOMEBREW_KEG_LIB.to_string())
+                }) {
+                    println!("cargo:rustc-link-search=native={lib_dir}");
+                }
                 println!("cargo:rustc-link-lib=framework=Accelerate");
             }
             // Both aarch64 fallbacks need the search path, for different reasons.
@@ -139,34 +169,16 @@ fn main() {
             // BLAS/LAPACK, so there is no Accelerate to link. A distro
             // `libopenblas-dev` lives in the system search path; an explicit
             // OPENBLAS_ROOT (e.g. a conda/pip install) contributes its `lib`
-            // dir to the link search path.
-            //
-            // macOS: Homebrew's `openblas` is keg-only, so it is *not* symlinked
-            // into `/opt/homebrew/lib` and a bare `-lopenblas` cannot resolve —
-            // the explicit prefix is the only way to find it. This is not
-            // optional polish: because this crate is a `[build-dependencies]`
-            // entry of `nuvai-mkl` and `nuvai-mkl-sys`, the propagating
-            // `rustc-link-lib` above also lands on *their build-script*
-            // binaries, and `RUSTFLAGS` is not applied to host units — so a
-            // caller-side `-L` (which is what CI passed) never reaches the link
-            // that fails. Before this, `--features openblas` on
-            // aarch64-apple-darwin died with `ld: library 'openblas' not found`
-            // while linking the build script.
-            //
-            // The runtime *rpath* is deliberately not emitted here:
-            // `cargo:rustc-link-arg` only applies to the emitting package's own
-            // targets, and this crate owns no binaries — whoever owns the
-            // binary emits it, through
-            // `nuvai_mkl_src::emit_binary_link_args` (see `src/link_args.rs`,
-            // #70). macOS needs none anyway: the Homebrew dylib carries an
-            // absolute install_name.
-            let aarch64_fallback =
-                (target_os == "linux" && target_arch == "aarch64") || target_os == "macos";
-            if aarch64_fallback
-                && let Ok(root) = std::env::var("OPENBLAS_ROOT")
-                && !root.trim().is_empty()
+            // dir to the link search path. The runtime *rpath* is deliberately
+            // not emitted here: `cargo:rustc-link-arg` only applies to the
+            // emitting package's own targets, and this crate owns no binaries —
+            // the crate that owns the test/example binaries (`nuvai-mkl/build.rs`)
+            // emits the rpath instead.
+            if target_os == "linux"
+                && target_arch == "aarch64"
+                && let Some(lib_dir) = openblas_root_lib_dir()
             {
-                println!("cargo:rustc-link-search=native={root}/lib");
+                println!("cargo:rustc-link-search=native={lib_dir}");
             }
         }
     }

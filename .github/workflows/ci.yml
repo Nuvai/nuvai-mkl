@@ -60,17 +60,9 @@ jobs:
     # note there before reaching for an `-xlarge` label.
     runs-on: macos-14
     env:
-      # openblas is keg-only, so `-lopenblas` needs an explicit search path.
-      # It must be supplied via OPENBLAS_ROOT — which `nuvai-mkl-src/build.rs`
-      # turns into `cargo:rustc-link-search` — and NOT via RUSTFLAGS. This
-      # crate is a `[build-dependencies]` entry of `nuvai-mkl` and
-      # `nuvai-mkl-sys`, so the propagating `rustc-link-lib` also lands on
-      # their *build-script* binaries, and Cargo does not apply RUSTFLAGS to
-      # host units: a `RUSTFLAGS: -L ...` never reaches the link that fails,
-      # which is why this job could not build before.
-      OPENBLAS_ROOT: /opt/homebrew/opt/openblas
-      # Same as the Accelerate job: vDSP's interleaved-complex DFT (task #13)
-      # is macOS 12.0+, so pin the deployment target for the linker.
+      # vDSP's interleaved-complex DFT (task #13) is macOS 12.0+, so pin the
+      # deployment target for the linker. No RUSTFLAGS: the keg-only OpenBLAS
+      # search path is emitted by nuvai-mkl-src's build.rs (`rustc-link-search`).
       MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v4

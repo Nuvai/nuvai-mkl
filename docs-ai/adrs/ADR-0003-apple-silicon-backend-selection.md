@@ -107,3 +107,15 @@ extends to `aarch64-unknown-linux-gnu`:
   mirrors the Apple Silicon one but is limited to CBLAS + Fortran LAPACK `_`.
 - A native ARM64 CI job (`ubuntu-24.04-arm` + `libopenblas-dev`) exercises the
   numerical and Unsupported paths on every PR/push.
+
+11. **macOS OpenBLAS search path: one documented implicit default.** Backend
+    selection stays explicit (decisions 1–2); this concerns only *where*
+    `-lopenblas` is found once `openblas` is already selected on
+    aarch64-apple-darwin. `nuvai-mkl-src` adds `{OPENBLAS_ROOT}/lib` when set,
+    else the Homebrew keg `/opt/homebrew/opt/openblas/lib` **only if that
+    directory exists** (keg-only installs are not on the default search path,
+    and `RUSTFLAGS -L` does not reach build-script links). It never changes
+    which backend is linked, and other installs (MacPorts, `/usr/local`, manual)
+    resolve via the default search path. For a non-default `OPENBLAS_ROOT`,
+    `nuvai-mkl` also emits the rpath for its own binaries (conda/pip dylibs carry
+    an `@rpath` install name); a downstream binary must emit its own.

@@ -30,6 +30,10 @@ fn main() {
         return;
     }
 
+    // The rpath arms below read OPENBLAS_ROOT; re-run when it changes so a
+    // cached build re-emits the correct rpath (and never keeps a stale one).
+    println!("cargo:rerun-if-env-changed=OPENBLAS_ROOT");
+
     // Build scripts compile for and run on the *host*, so `#[cfg(...)]` here
     // would describe the host, not the crate being built. Dispatch on the
     // target triple Cargo exposes as `CARGO_CFG_TARGET_*` instead (the same
@@ -62,6 +66,16 @@ fn main() {
     // aarch64-apple-darwin is the one target with something this crate's
     // binaries need that is not a link argument at all.
     if target_os == "macos" && target_arch == "aarch64" {
+        // An OpenBLAS in a non-default prefix (OPENBLAS_ROOT, e.g. conda/pip)
+        // carries an `@rpath/libopenblas.0.dylib` install name, so the loader
+        // needs an rpath at run time. Accelerate and the Homebrew keg (absolute
+        // install name) need none; the feature guard keeps an Accelerate build
+        // from emitting a stray rpath.
+        if cfg!(feature = "openblas")
+            && let Some(lib_dir) = nuvai_mkl_src::openblas_root_lib_dir()
+        {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
+        }
         // The Accelerate interleaved vDSP DFT (`vDSP_DFT_Interleaved_*`) used
         // by the FFT backend is API_AVAILABLE(macos(12.0)); rustc defaults
         // the aarch64-apple-darwin deployment target to 11.0, which would

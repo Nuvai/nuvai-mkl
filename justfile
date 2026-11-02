@@ -16,15 +16,15 @@ export MACOSX_DEPLOYMENT_TARGET := if os == "macos" { "12.0" } else { env("MACOS
 default:
     @just --list
 
-# Install prerequisites for this host: nightly toolchain + system libraries.
+# Install prerequisites for this host: stable 1.99 toolchain + system libraries.
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "host: {{os}}/{{arch}}"
     command -v rustup >/dev/null || { echo "install rustup first: https://rustup.rs"; exit 1; }
-    # rust-version = 1.99 (edition 2024) => nightly; there is no rust-toolchain.toml.
-    rustup toolchain install nightly --component clippy,rustfmt
-    rustup default nightly
+    # rust-version = 1.99 (edition 2024), stable (no nightly needed).
+    rustup toolchain install 1.99 --component clippy,rustfmt
+    rustup default 1.99
     case "{{os}}/{{arch}}" in
       macos/aarch64)
         # Accelerate needs nothing. OpenBLAS is only for the `openblas` feature.

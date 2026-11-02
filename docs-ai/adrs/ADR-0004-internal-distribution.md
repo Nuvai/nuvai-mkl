@@ -49,7 +49,7 @@ have to be re-derived from a closed issue.
   a git dependency directly. No identified consumer needs a registry artifact.
 
 - **Publishing would commit to a public stability surface the crate does not
-  offer.** It is pre-1.0, `edition = 2024`, requires a **nightly** toolchain to
+  offer.** It is pre-1.0, `edition = 2024`, requires Rust 1.99 (stable) to
   build at all, and on the Intel targets downloads ~140 MB of Intel oneMKL at
   build time. A crates.io release implies semver and support expectations across
   those axes that we are not prepared to meet. (Redistribution is not the
@@ -63,7 +63,7 @@ have to be re-derived from a closed issue.
 
 ## Consequences
 
-- Consumers must supply a matching **nightly** toolchain themselves — there is no
+- Consumers must supply a Rust 1.99+ toolchain themselves — there is no
   `rust-toolchain.toml`, and `rust-version = "1.99"` makes an older one a hard
   error. The README's Installation section states this and gives both the
   tag-pinned and `rev`-pinned forms.

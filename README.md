@@ -144,7 +144,7 @@ dynamic, so it asks for nothing that does not happen anyway.
 
 ## Requirements
 
-- Rust (built against **1.99 nightly**, edition 2024).
+- Rust **1.99** (stable), edition 2024.
 - First build downloads MKL into `~/.cache/nuvai-mkl/` (cached thereafter) — ~130 MB on `x86_64-unknown-linux-gnu` for the default static link (`mkl-static` + `mkl-include`), or ~150 MB if you select `dynamic` (`mkl` + `mkl-include` + `llvm-openmp`). On Windows the cache falls back to `%USERPROFILE%\.cache\nuvai-mkl` since `HOME` is often unset, and the acquisition also fetches `mkl-devel`, `llvm-openmp` and `tbb`.
 - `libclang` + `bindgen` for regenerating FFI bindings on Intel targets (LLVM on Windows, `libclang-dev` on Linux). The ARM64 aarch64 targets use a hand-written FFI surface and need no libclang.
 - On `aarch64-apple-darwin`, **macOS 12.0+** is required: the FFT backend uses vDSP's interleaved-complex DFT (`vDSP_DFT_Interleaved_*`), which is `API_AVAILABLE(macos(12.0))`.
@@ -221,8 +221,7 @@ published to a registry (ADR-0004). Depend on the wrapper crate only:
 and `backend_tag()` are public if you want to report the active backend yourself.
 
 The workspace declares `rust-version = "1.99"` (edition 2024), so Cargo refuses an
-older toolchain; today that means a **nightly** toolchain. Nothing pins one for
-you — there is no `rust-toolchain.toml` — so pin it in your own project. See
+older toolchain; stable 1.99 or newer is enough — no nightly required. See
 [Requirements](#requirements) for the per-target prerequisites, and expect an
 MKL download into `~/.cache/nuvai-mkl/` on the Intel targets the first time you
 build — ~130 MB for the default static link on `x86_64-unknown-linux-gnu`, and

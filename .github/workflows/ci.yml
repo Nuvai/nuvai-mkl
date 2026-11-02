@@ -31,9 +31,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install nightly 1.99 toolchain (native aarch64-apple-darwin)
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install stable 1.99 toolchain (native aarch64-apple-darwin)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99"
           targets: aarch64-apple-darwin
           components: clippy, rustfmt
 
@@ -46,8 +47,8 @@ jobs:
         run: cargo test --target aarch64-apple-darwin --workspace
 
       - name: cargo clippy
-        # No `-D warnings`: the toolchain is floating nightly, and a new lint
-        # in a nightly release would break CI for reasons unrelated to the
+        # No `-D warnings`: the toolchain floats on the 1.99 line, and a new lint
+        # in a point release could break CI for reasons unrelated to the
         # code — matching the x86_64 Linux/Windows clippy jobs.
         run: cargo clippy --target aarch64-apple-darwin --workspace --all-targets
 
@@ -70,9 +71,10 @@ jobs:
       - name: Install OpenBLAS
         run: brew install openblas
 
-      - name: Install nightly 1.99 toolchain (native aarch64-apple-darwin)
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install stable 1.99 toolchain (native aarch64-apple-darwin)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99"
           targets: aarch64-apple-darwin
           components: clippy, rustfmt
 
@@ -92,7 +94,7 @@ jobs:
         # aarch64-apple-darwin (#35).
         #
         # No `-D warnings`, on the same terms as the other four jobs: floating
-        # nightly + new lints = CI breaks unrelated to the code.
+        # toolchain + new lints = CI breaks unrelated to the code.
         run: cargo clippy --target aarch64-apple-darwin --workspace --all-targets --no-default-features --features openblas
 
   # ARM64 Linux: OpenBLAS is the sole backend (BLAS/LAPACK only; FFT/VML/VSL/
@@ -108,9 +110,10 @@ jobs:
       - name: Install OpenBLAS
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
 
-      - name: Install nightly 1.99 toolchain (native aarch64-unknown-linux-gnu)
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install stable 1.99 toolchain (native aarch64-unknown-linux-gnu)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99"
           targets: aarch64-unknown-linux-gnu
           components: clippy, rustfmt
 
@@ -123,7 +126,7 @@ jobs:
         run: cargo test --target aarch64-unknown-linux-gnu --workspace
 
       - name: cargo clippy
-        # No `-D warnings`: floating nightly + new lints = CI breaks unrelated
+        # No `-D warnings`: new lints on a floating toolchain = CI breaks unrelated
         # to the code; matches the x86_64 Linux/Windows clippy jobs.
         run: cargo clippy --target aarch64-unknown-linux-gnu --workspace --all-targets
 
@@ -145,9 +148,10 @@ jobs:
       - name: Install libclang (bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
-      - name: Install nightly 1.99 toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install stable 1.99 toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
@@ -185,7 +189,7 @@ jobs:
         #
         # The binaries are located by asking cargo, not by looking in
         # `target/debug/deps` — see the same step's note in the #70 history: a
-        # nightly moved test executables into the split build-dir layout, and a
+        # newer toolchain moved test executables into the split build-dir layout, and a
         # `find` by path silently matched nothing for two runs on `main`.
         run: |
           bins=$(cargo test --workspace --no-run --message-format=json 2>/dev/null \
@@ -226,9 +230,10 @@ jobs:
       - name: Install libclang (bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
-      - name: Install nightly 1.99 toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install stable 1.99 toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
@@ -301,8 +306,10 @@ jobs:
       - name: Install libclang (bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
-      - name: Install nightly 1.99 toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install stable 1.99 toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
 
       - uses: Swatinem/rust-cache@v2
 
@@ -399,9 +406,10 @@ jobs:
           "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
-      - name: Install nightly 1.99 toolchain (native x86_64-pc-windows-msvc)
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install stable 1.99 toolchain (native x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2

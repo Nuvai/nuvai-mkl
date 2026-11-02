@@ -27,6 +27,13 @@ use std::os::raw::c_void;
 ))]
 use std::ptr;
 
+// Used by the Intel arm and the Accelerate arm, but not by the inert
+// linux-aarch64 one, so it carries the same gate as `c_void`/`ptr` above.
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    not(target_arch = "aarch64")
+))]
+use crate::conv::len_to_c_int;
 use crate::error::{Error, Result};
 
 /// PARDISO matrix types (`mtype`).
@@ -66,9 +73,21 @@ pub struct Pardiso {
     /// System size from the most recent `solve` (Intel targets only).
     #[cfg(not(target_arch = "aarch64"))]
     n: i32,
-    /// True once the analysis phase has run (Intel targets only).
+    /// True once `pardisoinit` has run, i.e. once a phase-`-1` release is both
+    /// legal and necessary (Intel targets only).
+    ///
+    /// Set in [`Pardiso::new`], immediately after `pardisoinit` — *not* once the
+    /// analysis phase has succeeded, which is what this flag used to mean
+    /// (#23). Phase 11 can fail (error `-2`, out of memory, among others) after
+    /// partially allocating, and a handle whose flag was still false skipped
+    /// the release in [`Drop`] and leaked that memory. `pardisoinit` is what
+    /// makes a later phase `-1` legal, so it is the condition that gates the
+    /// release; being set at construction it cannot be missed by a failing
+    /// phase. It is true for every Intel handle today, and stays a field rather
+    /// than dropping the gate because the invariant it records — "PARDISO state
+    /// that only phase `-1` frees may exist" — is what `Drop` is keyed on.
     #[cfg(not(target_arch = "aarch64"))]
-    analyzed: bool,
+    release_pending: bool,
     /// Cached QR factorization plus the CSR matrix that produced it (Apple
     /// Silicon only). Reused across `solve` calls when the matrix is unchanged.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -84,10 +103,11 @@ pub struct Pardiso {
 /// A cached Accelerate QR factorization and the CSR matrix that produced it
 /// (Apple Silicon only).
 ///
-/// [`SparseOpaqueFactorization_Double`] is `#[derive(Clone, Copy)]` for the
-/// struct-return ABI but owns heap memory through raw pointers, so it is stored
-/// here by value and moved — never `Copy`ed — to avoid aliasing the allocation
-/// and double-freeing it in `Drop`.
+/// [`SparseOpaqueFactorization_Double`] owns heap memory through raw pointers
+/// and is deliberately **not `Copy`** (returning it by value needs only move
+/// semantics), so it is stored here by value and moved into `Drop` — the
+/// compiler now rejects any accidental duplication that would alias the
+/// allocation and double-free it.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 struct CachedFactor {
     /// The owned QR factorization (output of `_SparseFactorQR_Double`).
@@ -122,7 +142,10 @@ impl Pardiso {
                 mtype,
                 iparm,
                 n: 0,
-                analyzed: false,
+                // `pardisoinit` has run, so a phase-`-1` release is legal from
+                // here on — see the field's docs for why the flag is set here
+                // rather than after a successful analysis (#23).
+                release_pending: true,
                 _not_send_sync: PhantomData,
             }
         }
@@ -167,7 +190,17 @@ impl Pardiso {
             if ja.len() != a.len() {
                 return Err(Error::invalid("PARDISO: ja/a length mismatch"));
             }
-            let n = (ia.len() - 1) as i32;
+            // `ia` has length n+1, so an empty `ia` would underflow this
+            // subtraction: a panic under `overflow-checks` (every debug build)
+            // and a wrap to `usize::MAX` in release. `checked_sub` makes the
+            // expression total, and `len_to_c_int` rejects any length the
+            // 32-bit `MKL_INT` cannot hold — so `n` no longer relies on the
+            // `n <= 0` guard below catching a truncated `usize::MAX as i32 == -1`
+            // by coincidence.
+            let n = match ia.len().checked_sub(1) {
+                Some(n) => len_to_c_int(n, "PARDISO")?,
+                None => return Err(Error::invalid("PARDISO: bad ia/b lengths")),
+            };
             if n <= 0 || b.len() != n as usize {
                 return Err(Error::invalid("PARDISO: bad ia/b lengths"));
             }
@@ -186,6 +219,24 @@ impl Pardiso {
             // buffers (`b` read, `x` written) and `error` is a valid out-arg.
             // `pt`/`iparm`/`error` are passed mutably and the scalars by
             // reference, as the Fortran `pardiso` ABI expects.
+            //
+            // Phase 33's `b` argument is the one cast that needs an invariant
+            // written down (#29). `b` is the caller's `&[f64]` and is cast
+            // `*const` → `*mut` purely to satisfy the ABI: oneMKL's prototype
+            // declares the right-hand side as plain `void *b` (mkl_pardiso.h),
+            // with no `const` variant, even though phase 33 only reads it —
+            // `a` is declared `const void *a` and is passed as `*const c_void`
+            // for exactly that read-only reason. So the cast is sound *only*
+            // while "phase 33 reads `b`" holds: the solution is written to `x`,
+            // never to `b`.
+            //
+            // What would break it: any `iparm` setting that makes PARDISO write
+            // back into `b` (an overwrite/iterative-refinement output option),
+            // or reusing this call shape for a phase with different aliasing. If
+            // that ever becomes necessary, `b` must become `&mut [f64]` or be
+            // replaced by a scratch copy first — writing through this pointer
+            // while the caller still holds the `&[f64]` it came from is UB that
+            // no later check can detect.
             unsafe {
                 // Phase 11: analysis + reordering.
                 let phase = 11i32;
@@ -208,9 +259,11 @@ impl Pardiso {
                     &mut error,
                 );
                 if error != 0 {
-                    return Err(Error::mkl(error, "pardiso phase 11 (analysis)"));
+                    // No flag to clear on the way out: `release_pending` was
+                    // already set in `new`, so `Drop` still runs phase `-1` for
+                    // the memory this failed phase may have allocated (#23).
+                    return Err(Error::pardiso(error, "pardiso phase 11 (analysis)"));
                 }
-                self.analyzed = true;
 
                 // Phase 22: numerical factorization.
                 let phase = 22i32;
@@ -233,7 +286,7 @@ impl Pardiso {
                     &mut error,
                 );
                 if error != 0 {
-                    return Err(Error::mkl(error, "pardiso phase 22 (factorization)"));
+                    return Err(Error::pardiso(error, "pardiso phase 22 (factorization)"));
                 }
 
                 // Phase 33: solve (forward/back substitution + refinement).
@@ -257,7 +310,7 @@ impl Pardiso {
                     &mut error,
                 );
                 if error != 0 {
-                    return Err(Error::mkl(error, "pardiso phase 33 (solve)"));
+                    return Err(Error::pardiso(error, "pardiso phase 33 (solve)"));
                 }
             }
 
@@ -299,7 +352,17 @@ impl Pardiso {
         if ja.len() != a.len() {
             return Err(Error::invalid("PARDISO: ja/a length mismatch"));
         }
-        let n = (ia.len() - 1) as i32;
+        // `ia` has length n+1, so an empty `ia` would underflow this
+        // subtraction: a panic under `overflow-checks` (every debug build) and a
+        // wrap to `usize::MAX` in release. `checked_sub` makes the expression
+        // total, and `len_to_c_int` rejects any length the `i32` row count of
+        // `SparseMatrixStructure` cannot hold — so `n` no longer relies on the
+        // `n <= 0` guard below catching a truncated `usize::MAX as i32 == -1` by
+        // coincidence.
+        let n = match ia.len().checked_sub(1) {
+            Some(n) => len_to_c_int(n, "PARDISO")?,
+            None => return Err(Error::invalid("PARDISO: bad ia/b lengths")),
+        };
         if n <= 0 || b.len() != n as usize {
             return Err(Error::invalid("PARDISO: bad ia/b lengths"));
         }
@@ -348,10 +411,42 @@ impl Pardiso {
             };
             if factor.status != nuvai_mkl_sys::SparseStatusOK {
                 let status = factor.status;
-                // SAFETY: `factor` is an owned, initialized factorization;
-                // released exactly once on this error path (it was never cached).
+                // A *failed* factorization is still destroyed here — do not
+                // "fix" this by skipping the release when `status != OK` (#30).
+                // Apple's docs for `SparseOpaqueFactorization_Double`
+                // (Sparse/Solve.h) list four states, three of which have
+                // `status < 0`:
+                //   state 1: `.symbolicFactorization.status < 0` — nothing valid,
+                //            so nothing is owned;
+                //   state 2: `symbolic >= 0 && status < 0 && numeric == NULL` —
+                //            symbolic is valid and "may be used for future calls";
+                //   state 3: `symbolic >= 0 && status < 0 && numeric != NULL` —
+                //            "factor allocated/initialized correctly, but numeric
+                //            factorization failed" (e.g. Cholesky of an
+                //            indefinite matrix).
+                // The type docs say to free "these objects" with `SparseCleanup`,
+                // and `SparseCleanup` (Sparse/SolveImplementationTyped.h) is a
+                // static inline that calls `_SparseDestroyOpaqueNumeric`
+                // unconditionally — with no status check. States 2 and 3 own
+                // memory, so skipping the release would leak it; releasing state
+                // 1 frees nothing, but it is what `SparseCleanup` does anyway.
+                //
+                // State 3 is the one a test pins: the all-zero 2x2 in
+                // `pardiso_releases_failed_factorization_zero_matrix_on_aarch64`
+                // (`status == -2`, `symbolicFactorization.status == 0`, non-NULL
+                // numeric). A structurally empty row reaches state 1 instead
+                // (`status == -2`, `symbolicFactorization.status == -3`, NULL
+                // numeric), and is deliberately left untested: on the macOS 14 CI
+                // runner `_SparseFactorQR_Double` aborts the process on that
+                // input rather than returning, so no assertion on it can pass in
+                // CI — see the note in `tests/smoke.rs`.
+                //
+                // SAFETY: `factor` is an owned, initialized factorization in one
+                // of those states (the struct is returned by value and fully
+                // populated); released exactly once on this error path, since it
+                // was never cached.
                 unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut factor) };
-                return Err(Error::mkl(status, "_SparseFactorQR_Double"));
+                return Err(Error::sparse(status, "_SparseFactorQR_Double"));
             }
 
             // Replace any previous cache entry: destroy the old factor exactly
@@ -360,8 +455,8 @@ impl Pardiso {
             if let Some(old) = self.cached.take() {
                 let mut old_factor = old.factor;
                 // SAFETY: `old_factor` is an owned, initialized factorization
-                // that is no longer needed; moved out by value (never `Copy`ed)
-                // and destroyed exactly once here.
+                // that is no longer needed; moved out by value (the handle is
+                // not `Copy`) and destroyed exactly once here.
                 unsafe { nuvai_mkl_sys::_SparseDestroyOpaqueNumeric_Double(&mut old_factor) };
             }
             self.cached = Some(CachedFactor {
@@ -418,7 +513,15 @@ impl Pardiso {
 ///
 /// This is the single validated CSR→CSC transposition shared by the PARDISO
 /// (nonsymmetric, 1-based) and DSS (symmetric, 0-based) aarch64 backends, so
-/// bounds/monotonicity checks apply to both.
+/// bounds/monotonicity checks apply to both — as does the rejection of a
+/// structurally empty row (a zero row, hence a singular matrix) that would
+/// otherwise reach Accelerate's factorization and abort the process on
+/// macOS 14 (#58).
+///
+/// Callers supply the CSR contract rather than this function re-deriving it:
+/// `row_index` has `n + 1` entries and `values` is parallel to `columns`. Both
+/// are asserted in debug builds, since the alternative is an index panic from
+/// inside the transposition loop.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn csr_to_csc(
     n: usize,
@@ -429,6 +532,12 @@ pub(crate) fn csr_to_csc(
     upper_only: bool,
 ) -> Result<(Vec<i64>, Vec<i32>, Vec<f64>)> {
     let nnz = columns.len();
+    debug_assert_eq!(
+        row_index.len(),
+        n + 1,
+        "CSR row_index must have n + 1 entries"
+    );
+    debug_assert_eq!(values.len(), nnz, "CSR values must be parallel to columns");
 
     // A valid `base`-based CSR has row_index[0] == base, row_index[n] == nnz +
     // base, and a non-decreasing row_index. Any other shape would silently drop
@@ -438,12 +547,51 @@ pub(crate) fn csr_to_csc(
             "CSR row_index[0] does not match the index base",
         ));
     }
-    if row_index[n] != nnz as i32 + base {
+    // Compared in `i64` instead of narrowing to `row_index[n]`'s `i32`. The
+    // narrowing was #25's class: `nnz as i32` truncates above `i32::MAX`, which
+    // would let an invalid CSR pass this check and then index `row_indices` out
+    // of bounds below, and `nnz + base` overflows `i32` at `nnz == i32::MAX`
+    // (a panic under `overflow-checks`). Nothing is guarded instead, because
+    // `nnz` is not a length handed to C as 32 bits — the CSC arrays reach
+    // Accelerate through an `int64_t` `columnStarts` — so the fix is to drop the
+    // narrowing rather than bound it.
+    if i64::from(row_index[n]) != nnz as i64 + i64::from(base) {
         return Err(Error::invalid("CSR row_index[n] does not match nnz"));
     }
-    for w in row_index.windows(2) {
+    for (row, w) in row_index.windows(2).enumerate() {
         if w[1] < w[0] {
             return Err(Error::invalid("CSR row_index must be non-decreasing"));
+        }
+        // A structurally empty row (`row_index[row] == row_index[row + 1]`) is a
+        // zero row whatever the values are, so the matrix is singular and no
+        // backend can solve it. The reason it is rejected *here*, rather than
+        // left to the solver, is that Accelerate's QR path does not fail
+        // cleanly on one: on macOS 14 `_SparseFactorQR_Double` aborts the
+        // process with `SIGTRAP` instead of returning a status, and a `SIGTRAP`
+        // is not recoverable — a safe API must not let a caller reach it (#58).
+        // macOS 26 returns the state-1 error object instead, which is exactly
+        // the kind of platform split that makes "the caller will get an error"
+        // an unsafe assumption.
+        //
+        // The kind matches what the residual check reports for a singular
+        // matrix, so callers see one answer for "this system has no solution"
+        // regardless of how the singularity was detected. Intel PARDISO never
+        // reaches this function, so that path's handling of an empty row is
+        // unchanged — this closes an abort observed on Accelerate, and does not
+        // propagate the rejection to an Intel path where no abort was measured.
+        // (It would plausibly surface as a zero pivot at phase 22, but that is
+        // an inference from PARDISO's documented behaviour rather than a
+        // measurement, and this guard does not rest on it.)
+        //
+        // `upper_only` is unaffected by the reasoning above: an empty row of
+        // the stored triangle leaves that row of the full symmetric matrix
+        // zero, since the reflected entries live in earlier rows. The check
+        // therefore applies to DSS's Cholesky path as well, which shares this
+        // transposition.
+        if w[1] == w[0] {
+            return Err(Error::invalid(format!(
+                "CSR row {row} has no entries — the matrix is structurally singular"
+            )));
         }
     }
 
@@ -456,6 +604,10 @@ pub(crate) fn csr_to_csc(
     }
     let mut col_starts = vec![0i64; n + 1];
     for j in 0..n {
+        // `col_count[j] <= nnz`, and a slice of more than `i64::MAX` elements
+        // cannot be allocated, so this widening is lossless — the reason the
+        // `usize` count is left as `usize` here rather than narrowed as `nnz`
+        // used to be above.
         col_starts[j + 1] = col_starts[j] + col_count[j] as i64;
     }
     let mut next = col_starts[..n].to_vec();
@@ -635,8 +787,8 @@ impl Drop for Pardiso {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             // Release the cached QR factorization exactly once. It is moved out
-            // by value (`take` into a local) so the raw-pointer payload is
-            // never `Copy`ed/aliased.
+            // by value (`take` into a local); the handle is not `Copy`, so the
+            // raw-pointer payload cannot be silently aliased.
             if let Some(cached) = self.cached.take() {
                 let mut factor = cached.factor;
                 // SAFETY: `factor` is an owned, initialized factorization
@@ -651,7 +803,13 @@ impl Drop for Pardiso {
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            if self.analyzed {
+            // Keyed on "`pardisoinit` ran", not on "the analysis succeeded"
+            // (#23). The analysis phase can fail after partially allocating,
+            // and a handle that survived `pardisoinit` but not phase 11 still
+            // owns that memory — gating the release on a successful analysis
+            // leaked it. `self.n` is `0` when no `solve` ever ran, which phase
+            // `-1` ignores.
+            if self.release_pending {
                 // SAFETY: `self.pt`/`self.iparm` are initialized and
                 // `self.n`/`self.mtype` are valid (set during `solve`); phase
                 // -1 releases PARDISO's internal memory exactly once. The null
@@ -684,5 +842,49 @@ impl Drop for Pardiso {
                 }
             }
         }
+    }
+}
+
+// Intel targets only: the flag under test exists solely on the Intel arm (the
+// Accelerate arm releases its cached factorization, and linux-aarch64 has no
+// backend at all).
+#[cfg(all(test, not(target_arch = "aarch64")))]
+mod tests {
+    use super::*;
+
+    /// Regression test for #23.
+    ///
+    /// `Drop` decides whether to release with phase `-1` from this flag, so the
+    /// flag must be true for *any* handle whose `pardisoinit` has run — the
+    /// invariant is "the handle may own PARDISO memory", not "the analysis
+    /// succeeded". Asserting it straight after `new` is the whole test: the
+    /// previous code set `analyzed = true` only after phase 11 returned
+    /// success, so a phase-11 failure left it false, `Drop` skipped phase `-1`,
+    /// and the partially-allocated analysis memory leaked.
+    ///
+    /// Deliberately not driven through a failing `solve`: forcing a *phase-11*
+    /// failure needs an input oneMKL rejects at analysis, and the test would
+    /// then be asserting on which phase reported the error rather than on the
+    /// invariant. The flag is set before any `pardiso` call can fail, so the
+    /// state after `new` is what makes the leak impossible.
+    #[test]
+    fn a_handle_is_releasable_before_any_solve() {
+        let solver = Pardiso::new(mtype::NONSYMMETRIC);
+        assert!(
+            solver.release_pending,
+            "a handle whose `pardisoinit` has run must be released on drop: a phase-11 \
+             failure can leave partially-allocated analysis memory that only phase -1 \
+             frees (#23)"
+        );
+    }
+
+    /// The flag must not be cleared on the error paths that run after it is
+    /// set — a rejected `solve` still leaves the handle releasable.
+    #[test]
+    fn a_rejected_solve_still_leaves_the_handle_releasable() {
+        let mut solver = Pardiso::new(mtype::NONSYMMETRIC);
+        // Fails on argument lengths, before any `pardiso` call.
+        assert!(solver.solve(&[], &[], &[], &[]).is_err());
+        assert!(solver.release_pending);
     }
 }

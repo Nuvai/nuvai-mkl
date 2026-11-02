@@ -83,8 +83,10 @@ extends to `aarch64-unknown-linux-gnu`:
    emits `-lopenblas` and, when `OPENBLAS_ROOT` is set, adds `{root}/lib` to the
    propagated link-search path (for conda/pip installs). The runtime rpath is
    emitted where the binaries live: `nuvai-mkl`'s build script sets it for the
-   workspace's own test/example targets (`cargo:rustc-link-arg` does not
-   propagate from a dependency crate), and downstream binaries set their own.
+   workspace's own test/example targets, and a downstream binary's own build
+   script sets its (see ADR-0006, which moved that logic into
+   `nuvai_mkl_src::emit_binary_link_args` that both call — `cargo:rustc-link-arg`
+   does not propagate from a dependency crate, which is what #70 turned on).
 
 9. **Unsupported domains return `ErrorKind::Unsupported`.** FFT (no DFTI/vDSP),
    VML (no vForce), VSL (no `rand` backend is wired on Linux), PARDISO and DSS

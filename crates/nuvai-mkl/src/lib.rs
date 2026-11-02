@@ -44,6 +44,9 @@ pub use nuvai_mkl_sys::MKL_VERSION;
 /// The oneMKL version this crate was built against.
 pub const VERSION: &str = MKL_VERSION;
 
+/// Crate-internal helpers shared across the domain modules (not API surface).
+mod conv;
+
 pub mod blas;
 pub mod dss;
 pub mod error;

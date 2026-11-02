@@ -1,13 +1,29 @@
-//! Linker flags for `nuvai-mkl`'s own test/example/bench binaries.
+//! Linker flags (and one compiled object) for `nuvai-mkl`'s own
+//! test/example/bench binaries.
 //!
-//! `rustc-link-arg` is scoped to the targets of the package that emits it, so
-//! the runtime rpath (and the `--no-as-needed` around libm) must be emitted
-//! here — `nuvai-mkl-src` emits the *propagating* directives (`rustc-link-lib`
-//! / `rustc-link-search`), which reach every downstream link, but its
-//! `rustc-link-arg` would only ever apply to its own (nonexistent) binaries.
+//! Cargo's build-script linker output splits in two, and this file exists
+//! because of which half this package can reach. `cargo:rustc-link-lib` /
+//! `cargo:rustc-link-search` are applied to every link that depends on the
+//! emitting package, so all of oneMKL's propagate from `nuvai-mkl-src`, the
+//! sole `links = "mkl"` provider — including, since #70, the static group link,
+//! which is a linker script reached through `-l`. `cargo:rustc-link-arg` is
+//! scoped to the emitting package's *own* targets, so the arguments that cannot
+//! be spelled as a library or a search path — an executable's runtime rpath,
+//! `--no-as-needed`, and the object that keeps the OpenMP runtime in DT_NEEDED
+//! against mold (#44) — have to come from whoever owns the binary.
 //!
-//! The aarch64 fallbacks carry no Intel MKL, so `locate()` (which panics on
-//! an aarch64 host) is only ever called for the x86_64 Linux/Windows targets.
+//! For the workspace's binaries that owner is this crate; for a downstream
+//! crate's it is that crate's own build script. Both call the same
+//! implementation, `nuvai_mkl_src::emit_binary_link_args`, so the arguments
+//! cannot drift apart — before #70 this file hand-rolled them, and a consumer
+//! that merely depended on `nuvai-mkl` received none of them: it linked (the
+//! search path and `-lmkl_rt` did propagate) and then failed at load time with
+//! `libmkl_rt.so.3: cannot open shared object file`.
+//!
+//! The aarch64 fallbacks carry no Intel MKL and need no OpenMP retention
+//! object, so `MklInfo` is only ever read for the x86_64 Linux/Windows targets
+//! — which are also the only ones where `nuvai-mkl-src`'s build script
+//! publishes the metadata it reads.
 
 fn main() {
     if std::env::var("DOCS_RS").is_ok() {
@@ -18,68 +34,51 @@ fn main() {
     // would describe the host, not the crate being built. Dispatch on the
     // target triple Cargo exposes as `CARGO_CFG_TARGET_*` instead (the same
     // target-aware selection `nuvai-mkl-src` uses) so cross-compiling
-    // `--target aarch64-unknown-linux-gnu` from an x86_64 host emits the
-    // OpenBLAS rpath rather than Intel x86_64 directives.
+    // `--target aarch64-unknown-linux-gnu` from an x86_64 host does not emit
+    // Intel x86_64 directives.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS is set");
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH is set");
 
-    match (target_os.as_str(), target_arch.as_str()) {
-        // aarch64 fallbacks: no Intel MKL, no conda shared objects, so no
-        // --no-as-needed. Accelerate lives in the SDK and a system OpenBLAS is
-        // linked by name — but an OpenBLAS in a non-default prefix (OPENBLAS_ROOT,
-        // e.g. conda/pip) is found at link time via the search path emitted by
-        // nuvai-mkl-src, and the loader needs an rpath at run time to find it.
-        ("linux", "aarch64") => {
-            if let Ok(root) = std::env::var("OPENBLAS_ROOT")
-                && !root.trim().is_empty()
-            {
-                // nuvai-mkl owns the test/example/bench binaries, so this
-                // rustc-link-arg — unlike `nuvai-mkl-src`'s, which cannot
-                // propagate — reaches exactly the links that need the rpath.
-                println!("cargo:rustc-link-arg=-Wl,-rpath,{root}/lib");
-            }
-        }
-        ("macos", "aarch64") => {
-            // The Accelerate interleaved vDSP DFT (`vDSP_DFT_Interleaved_*`) used
-            // by the FFT backend is API_AVAILABLE(macos(12.0)); rustc defaults
-            // the aarch64-apple-darwin deployment target to 11.0, which would
-            // strong-link those symbols and abort at load time on macOS 10.15/11
-            // with "Symbol not found". Pin the minimum so nuvai-mkl's own
-            // test/example/bench binaries load only on macOS 12.0+. Downstream
-            // binaries must set MACOSX_DEPLOYMENT_TARGET=12.0 themselves — a
-            // library build script cannot force the final link's min OS.
-            println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=12.0");
-        }
-        // Intel x86_64 Linux: keep libm in the final link (conda's
-        // `libmkl_core.so.3` references `log`/`exp`/`sin`/… without a
-        // DT_NEEDED) and add the runtime rpath to the conda MKL shared objects.
-        ("linux", "x86_64") => {
-            let info = nuvai_mkl_src::locate();
-            println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-lm,--as-needed");
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", info.lib_dir.display());
-            if let Some(omp) = &info.omp_lib_dir {
-                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", omp.display());
-                // `libmkl_intel_thread.so.3` references `omp_*` symbols without
-                // a DT_NEEDED on the OpenMP runtime, so keep `libiomp5.so` in
-                // the final link the same way libm is kept (see above): the
-                // test/example objects never reference it directly, so plain
-                // `--as-needed` would drop it from DT_NEEDED.
-                println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-liomp5,--as-needed");
-            }
-        }
-        // Intel x86_64 Windows: no rpath; the loader resolves `mkl_rt.3.dll`
-        // (and `libiomp5md.dll` / `tbb12.dll`) at process start from PATH (or
-        // the exe's directory). Surface the runtime DLL directories so CI can
-        // prepend them to PATH and local dev knows where to add them.
-        ("windows", "x86_64") => {
-            let info = nuvai_mkl_src::locate();
-            for dll_dir in info.dll_dirs() {
-                println!(
-                    "cargo:warning=MKL runtime DLLs in {} — add to PATH (or copy beside the exe) before cargo run/test",
-                    dll_dir.display()
-                );
-            }
-        }
-        other => panic!("nuvai-mkl: unsupported target {other:?}"),
+    // An invariant of *this* manifest, not of a consumer's: without the
+    // dependency Cargo forwards no `DEP_MKL_*` — the metadata travels through a
+    // normal `[dependencies]` edge only, never through `[build-dependencies]`,
+    // which is what #70 established — so the acquisition and every propagating
+    // directive would be missing too, and the symptom would be a test binary
+    // that cannot load `libmkl_rt.so.3`, which reads as a cache problem. A
+    // downstream crate may legitimately call the same helper with no such
+    // dependency (the static path needs none), which is why the helper warns
+    // there and this crate fails loudly here.
+    if matches!(target_os.as_str(), "linux" | "windows")
+        && target_arch == "x86_64"
+        && nuvai_mkl_src::MklInfo::from_build_metadata().is_none()
+    {
+        panic!(
+            "nuvai-mkl-src published no DEP_MKL_* metadata — it must stay in this crate's \
+             [dependencies] for Cargo to forward it (#70)"
+        );
+    }
+    nuvai_mkl_src::emit_binary_link_args();
+
+    // aarch64-apple-darwin is the one target with something this crate's
+    // binaries need that is not a link argument at all.
+    if target_os == "macos" && target_arch == "aarch64" {
+        // The Accelerate interleaved vDSP DFT (`vDSP_DFT_Interleaved_*`) used
+        // by the FFT backend is API_AVAILABLE(macos(12.0)); rustc defaults
+        // the aarch64-apple-darwin deployment target to 11.0, which would
+        // strong-link those symbols and abort at load time on macOS 10.15/11
+        // with "Symbol not found". Pin the minimum so nuvai-mkl's own
+        // test/example/bench binaries load only on macOS 12.0+. `rustc-env`
+        // only reaches *this* crate's own rustc invocation — it cannot set
+        // a downstream consumer's deployment target, so a `cargo:warning`
+        // (surfaced by Cargo for every crate the build touches, including
+        // this one) is the only channel that reaches them: they must set
+        // MACOSX_DEPLOYMENT_TARGET=12.0 themselves before linking (#32).
+        println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=12.0");
+        println!(
+            "cargo:warning=nuvai-mkl's FFT backend on Apple Silicon calls a macOS \
+             12.0+ Accelerate symbol (vDSP_DFT_Interleaved_*). Binaries linking \
+             nuvai-mkl must set MACOSX_DEPLOYMENT_TARGET=12.0 (or higher) themselves, \
+             or they will abort at load time with \"Symbol not found\" on macOS 10.15/11."
+        );
     }
 }

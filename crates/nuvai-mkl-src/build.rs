@@ -43,9 +43,6 @@ fn main() {
     println!("cargo:rerun-if-changed=src/backend.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENBLAS");
     println!("cargo:rerun-if-env-changed=OPENBLAS_ROOT");
-    // The macOS `openblas` fallback probes the Homebrew keg's existence on disk,
-    // so re-run when it appears or disappears.
-    println!("cargo:rerun-if-changed=/opt/homebrew/opt/openblas/lib");
     // Changing the mirror changes what is fetched, so the script must re-run.
     println!("cargo:rerun-if-env-changed=NUVAI_MKL_CONDA_BASE");
 
@@ -140,13 +137,27 @@ fn main() {
                 // the keg actually exists, so a MacPorts `/opt/local`, a
                 // `/usr/local`, or a manual-build install resolves via the default
                 // search path instead of being silently shadowed by a stale
-                // package-manager path. This must be a `rustc-link-search` (not
-                // RUSTFLAGS `-L`) because Cargo does not forward RUSTFLAGS to
-                // build-script linking, and the `-lopenblas` above propagates to
-                // build scripts too.
+                // package-manager path. This is a deliberate, documented exception
+                // to ADR-0003's "explicit, never silent" rule (see its decision 11):
+                // it only ever *adds* a search path for the already-selected
+                // OpenBLAS backend, never changes which backend is linked.
+                //
+                // This must be a `rustc-link-search` (not RUSTFLAGS `-L`) because
+                // Cargo does not forward RUSTFLAGS to build-script linking, and
+                // the `-lopenblas` above propagates to build scripts too. (#70
+                // moved every propagating directive here for the same reason; the
+                // per-binary rpath stays with the binary's owner, see
+                // `emit_binary_link_args` and `nuvai-mkl/build.rs`.)
+                const HOMEBREW_KEG_LIB: &str = "/opt/homebrew/opt/openblas/lib";
+                // The keg probe is an input, so re-run when the keg appears or
+                // disappears. Emitted only here: a `rerun-if-changed` on a path
+                // that does not exist makes Cargo re-run the script on *every*
+                // build, which would be pure cost on every non-macOS target.
+                println!("cargo:rerun-if-changed={HOMEBREW_KEG_LIB}");
                 if let Some(lib_dir) = openblas_root_lib_dir().or_else(|| {
-                    let keg = "/opt/homebrew/opt/openblas/lib";
-                    std::path::Path::new(keg).is_dir().then(|| keg.to_string())
+                    std::path::Path::new(HOMEBREW_KEG_LIB)
+                        .is_dir()
+                        .then(|| HOMEBREW_KEG_LIB.to_string())
                 }) {
                     println!("cargo:rustc-link-search=native={lib_dir}");
                 }

@@ -271,21 +271,45 @@ pub const fn backend_tag(backend: Backend) -> &'static str {
 /// (conda/pip): a set, non-empty prefix contributes `{root}/lib` to the link
 /// search path (emitted by this crate's build script) and to the runtime rpath
 /// (emitted by `nuvai-mkl`'s build script, which owns the test/example
-/// binaries). Returns `None` when the variable is unset or empty, meaning
-/// "resolve `-lopenblas` via the toolchain's default search path". Selection is
-/// explicit, never silent (ADR-0003): this helper infers no package-manager-
-/// specific path — the macOS Homebrew-keg default is applied by the caller and
-/// gated on the keg's existence on disk.
+/// binaries; a downstream binary needs its own rpath). Returns `None` when the
+/// variable is unset or blank, meaning "resolve `-lopenblas` via the
+/// toolchain's default search path". This helper infers no package-manager-
+/// specific path: the macOS Homebrew-keg default is applied by the build script
+/// and gated on the keg's existence on disk (ADR-0003, decision 11).
 pub fn openblas_root_lib_dir() -> Option<String> {
-    std::env::var("OPENBLAS_ROOT")
-        .ok()
-        .filter(|root| !root.trim().is_empty())
-        .map(|root| format!("{root}/lib"))
+    openblas_lib_dir_from(std::env::var("OPENBLAS_ROOT").ok().as_deref())
+}
+
+/// Pure core of [`openblas_root_lib_dir`]: the root is trimmed once, so the
+/// emptiness check and the emitted path agree, and a trailing `/` is not doubled.
+fn openblas_lib_dir_from(root: Option<&str>) -> Option<String> {
+    let root = root?.trim().trim_end_matches('/');
+    (!root.is_empty()).then(|| format!("{root}/lib"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openblas_lib_dir_unset_or_blank_is_none() {
+        assert_eq!(openblas_lib_dir_from(None), None);
+        assert_eq!(openblas_lib_dir_from(Some("")), None);
+        assert_eq!(openblas_lib_dir_from(Some("   ")), None);
+        assert_eq!(openblas_lib_dir_from(Some("/")), None);
+    }
+
+    #[test]
+    fn openblas_lib_dir_appends_lib_and_trims() {
+        assert_eq!(
+            openblas_lib_dir_from(Some("/opt/oblas")).as_deref(),
+            Some("/opt/oblas/lib")
+        );
+        assert_eq!(
+            openblas_lib_dir_from(Some("  /opt/oblas/ ")).as_deref(),
+            Some("/opt/oblas/lib")
+        );
+    }
 
     #[test]
     fn backend_is_explicit_and_tagged() {

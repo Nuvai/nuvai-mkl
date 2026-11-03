@@ -12,8 +12,9 @@ use nuvai_mkl::{blas, vml};
 /// vector op, an sgemm and an hgemm — and assert the results.
 ///
 /// The numbers are the issue's, and the fp16 operands are the bit patterns
-/// `smoke.rs` uses: every value is an integer below 2048, which binary16
-/// represents exactly, so the product is asserted bit-for-bit.
+/// the per-domain smoke tests in `crates/nuvai-mkl/tests/` use: every value is
+/// an integer below 2048, which binary16 represents exactly, so the product is
+/// asserted bit-for-bit.
 pub fn run() {
     // VML.
     let mut exp = [0.0f32; 3];

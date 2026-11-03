@@ -68,6 +68,10 @@ nuvai-mkl-src = { workspace = true }
 # decoration: the static archives are conda's glibc linux-64 ones, the same
 # triple `backend.rs`'s `compile_error!` and `build.rs`'s check require.
 #
+# Two units means two build scripts against one `~/.cache/nuvai-mkl`; they
+# serialise on a cache lock (`cache_lock.rs`, ADR-0008), so each archive is
+# fetched once. The units cannot be merged: they carry different features.
+#
 # There are two edges because Cargo builds two units of `nuvai-mkl-src` from
 # them — one per dependency kind — and resolver "2" does not unify features
 # across them. They are matched against *different* triples, which is the part

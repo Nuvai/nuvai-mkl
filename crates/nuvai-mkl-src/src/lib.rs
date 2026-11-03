@@ -79,6 +79,10 @@ include!("mkl_info.rs");
 include!("backend.rs");
 include!("link_args.rs");
 
+// Compiled here only so its unit tests run; the lock is used by `build.rs` (#94).
+#[cfg(test)]
+include!("cache_lock.rs");
+
 // `acquire_logic.rs` is the std-only half of `acquire.rs` (#95). Only `build.rs`
 // calls it, so it is compiled here for its tests alone: unconditionally it
 // would be dead code in the library.

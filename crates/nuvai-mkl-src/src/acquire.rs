@@ -237,6 +237,12 @@ type PkgSet<'a> = (Pkg<'a>, Pkg<'a>, Option<Pkg<'a>>, &'a [Pkg<'a>]);
 fn download_mkl() -> MklInfo {
     let pkg_dir = cache_dir().join(format!("mkl-{MKL_VERSION}"));
 
+    // Serialise with the sibling build script (#94): this crate is built as both
+    // a dependency and a build-dependency unit, and both land here. The second
+    // one blocks until the first has finished, then finds every archive verified
+    // and every tree extracted, so it does no network I/O. Held until return.
+    let _cache_lock = CacheLock::acquire(&pkg_dir);
+
     let ((mkl_file, mkl_sha), (include_file, include_sha), devel, runtime): PkgSet<'_> =
         match target_os().as_str() {
         "linux" => (
@@ -376,8 +382,9 @@ fn fetch_and_extract_conda(file: &str, sha256: &str, pkg_dir: &Path) -> PathBuf 
 /// shares `out`'s parent directory.
 ///
 /// `nuvai-mkl-src` runs as both a `[dependencies]` and a `[build-dependencies]`
-/// unit, so two build scripts race this extraction the same way [`staging_path`]
-/// documents for the download. A bare `out.exists()` guard is not safe here: a
+/// unit, so two build scripts can reach this extraction the way [`staging_path`]
+/// documents for the download. `download_mkl`'s `CacheLock` (#94) normally
+/// serialises them; the atomic extraction below remains as defence in depth. A bare `out.exists()` guard is not safe here: a
 /// directory populated by `tar.unpack` exists from the moment its first entry is
 /// written, long before the payload is complete, so the second unit could see it
 /// and skip extraction while `libmkl_rt.so` (or whichever file lands last) is
@@ -501,9 +508,11 @@ fn download_verified(url: &str, dest: &Path, sha256: &str, file: &str) {
 ///
 /// That matters because `nuvai-mkl-src` is both a dependency and a
 /// build-dependency of the crates above it: Cargo builds it as two units and
-/// runs **two** build scripts, aimed at this one cache directory. On CI both
-/// download the same archives at the same time. Sharing a staging name would let
-/// them truncate each other mid-download, and removing `dest` on a failed
+/// runs **two** build scripts, aimed at this one cache directory. Since #94
+/// `download_mkl` holds a cross-process `CacheLock`, so the second unit normally
+/// waits and finds the archive already installed; this per-PID staging is kept as
+/// defence in depth (advisory locks can be unreliable, e.g. on NFS cache dirs).
+/// Without it, sharing a staging name would let them truncate each other mid-download, and removing `dest` on a failed
 /// attempt — which an earlier revision of this code did — lets a unit whose
 /// fetch was refused delete the archive the other one had just verified, taking
 /// it down with `NotFound` somewhere later. Both run on the same machine with no

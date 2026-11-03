@@ -33,6 +33,7 @@
 // imports it declares, since both share this script's module — which is also
 // where `fs` (from `acquire.rs`) comes from.
 include!("src/mkl_info.rs");
+include!("src/cache_lock.rs");
 include!("src/acquire_logic.rs");
 include!("src/acquire.rs");
 include!("src/backend.rs");
@@ -42,6 +43,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/mkl_info.rs");
     println!("cargo:rerun-if-changed=src/acquire.rs");
+    println!("cargo:rerun-if-changed=src/cache_lock.rs");
     println!("cargo:rerun-if-changed=src/backend.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENBLAS");
     println!("cargo:rerun-if-env-changed=OPENBLAS_ROOT");

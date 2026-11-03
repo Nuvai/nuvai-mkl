@@ -52,6 +52,15 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ### Fixed
 
+- **Cold-cache workspace builds acquire oneMKL once** (issue #94).
+  `nuvai-mkl-src` is built as both a dependency and a build-dependency unit, and
+  on a cold cache both build scripts downloaded the same 143 MB archive
+  concurrently. `download_mkl` now holds an exclusive advisory lock
+  (`<cache>/mkl-<version>/.acquire.lock`, `std::fs::File::lock`, no new
+  dependency) for the whole acquisition, so the second unit waits and then finds
+  verified archives and extracted trees. The per-PID staging from #63/#64 stays
+  as defence in depth. See ADR-0009.
+
 - The second gap reported in issue #72 was re-tested on the current revision and
   is real: supplying the rpath by hand surfaces
   `libmkl_intel_thread.so.3: undefined symbol: __kmpc_global_thread_num`, exactly

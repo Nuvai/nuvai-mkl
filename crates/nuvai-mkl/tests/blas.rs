@@ -184,13 +184,15 @@ fn blas_rejects_undersized_slices() {
     assert!(blas::dscal(3, 2.0, &mut xd, 1).is_err());
 }
 
-/// Apple Silicon has no fp16 GEMM: Accelerate's CBLAS carries no half-precision
-/// entry point, and this holds under the `openblas` feature too (OpenBLAS
-/// exposes no `hgemm`/`cblas_hgemm` symbol). #47 requires it to fail loudly
-/// rather than fall back to something else (ADR-0003, decision 2).
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+/// aarch64 has no fp16 GEMM, on either OS. Accelerate's CBLAS (macOS) carries no
+/// half-precision entry point, and OpenBLAS (Linux, and macOS under the
+/// `openblas` feature) exposes no `hgemm`/`cblas_hgemm` symbol. #47 requires the
+/// fp16 path to fail loudly instead of falling back to an fp32 one, and before
+/// validating its arguments (ADR-0003, decision 2). `blas::hgemm` gates on
+/// `target_arch = "aarch64"` alone, so this is one contract for both OSes.
+#[cfg(target_arch = "aarch64")]
 #[test]
-fn blas_hgemm_unsupported_on_apple_silicon() {
+fn blas_hgemm_unsupported_on_aarch64() {
     use nuvai_mkl::error::ErrorKind;
     let a = [0x3C00u16; 4];
     let b = [0x3C00u16; 4];
@@ -217,48 +219,4 @@ fn blas_hgemm_unsupported_on_apple_silicon() {
         .kind(),
         ErrorKind::Unsupported
     );
-}
-
-/// On `aarch64-unknown-linux-gnu` OpenBLAS covers only BLAS/LAPACK, so every
-/// other domain must return `ErrorKind::Unsupported` — never a silent no-op or
-/// a panic (ADR-0003, decision 2).
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-mod linux_aarch64 {
-    use nuvai_mkl::error::ErrorKind;
-    use nuvai_mkl::{
-        blas,
-        layout::{Layout, Transpose},
-    };
-
-    #[test]
-    fn hgemm_unsupported() {
-        // #47: OpenBLAS exposes no half-precision GEMM, so the fp16 path fails
-        // loudly instead of falling back to an fp32 one — and before validating
-        // its arguments.
-        let a = [0x3C00u16; 4];
-        let b = [0x3C00u16; 4];
-        let mut c = [0u16; 4];
-        assert_eq!(
-            blas::hgemm(
-                Layout::RowMajor,
-                Transpose::NoTrans,
-                Transpose::NoTrans,
-                2,
-                2,
-                2,
-                0x3C00,
-                &a,
-                2,
-                &b,
-                2,
-                0x0000,
-                &mut c,
-                2,
-            )
-            .err()
-            .unwrap()
-            .kind(),
-            ErrorKind::Unsupported
-        );
-    }
 }

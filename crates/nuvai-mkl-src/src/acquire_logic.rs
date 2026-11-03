@@ -91,11 +91,16 @@ fn check_digest(actual: &str, expected: &str, file: &str, len: u64) -> Result<()
 }
 
 /// How long to wait before `attempt` (1-based) of a download. Attempt 1 is not
-/// preceded by a pause; the schedule doubles from there: 2 s, then 4 s.
+/// preceded by a pause (nor is attempt 0, which does not exist); the schedule
+/// doubles from there: 2 s, then 4 s. The exponent is capped so a large
+/// `attempt` cannot overflow the shift.
 ///
 /// A CDN that is rate-limiting wants the gap, not another request.
 fn retry_pause(attempt: u32) -> std::time::Duration {
-    std::time::Duration::from_secs(1 << (attempt - 1))
+    if attempt <= 1 {
+        return std::time::Duration::ZERO;
+    }
+    std::time::Duration::from_secs(1u64 << (attempt - 1).min(32))
 }
 
 /// Move a verified staging file into place, without disturbing a good archive
@@ -118,9 +123,10 @@ where
     }
     match std::fs::rename(tmp, dest) {
         Ok(()) => Ok(()),
-        // Windows refuses to rename onto an existing file, so a failure here
-        // usually means the other build script won the race. Re-check before
-        // treating it as an error.
+        // `rename` replaces an existing file on every platform we build for, but
+        // it can still fail — on Windows when the other build script has `dest`
+        // open, or when `tmp` is gone — and that usually means the other build
+        // script won the race. Re-check before treating it as an error.
         Err(e) => {
             let installed = verify(dest).is_ok();
             let _ = std::fs::remove_file(tmp);
@@ -261,6 +267,14 @@ mod acquire_logic_tests {
         assert_eq!(retry_pause(2), Duration::from_secs(2));
         assert_eq!(retry_pause(3), Duration::from_secs(4));
         assert_eq!(retry_pause(4), Duration::from_secs(8));
+    }
+
+    #[test]
+    fn retry_pause_is_total() {
+        // No pause before the first attempt, and no panic for 0 or a huge value.
+        assert_eq!(retry_pause(0), Duration::ZERO);
+        assert_eq!(retry_pause(1), Duration::ZERO);
+        assert_eq!(retry_pause(u32::MAX), Duration::from_secs(1 << 32));
     }
 
     // ---- install_with -----------------------------------------------------

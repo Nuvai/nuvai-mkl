@@ -32,6 +32,7 @@
 // imports it declares, since both share this script's module — which is also
 // where `fs` (from `acquire.rs`) comes from.
 include!("src/mkl_info.rs");
+include!("src/cache_lock.rs");
 include!("src/acquire.rs");
 include!("src/backend.rs");
 

@@ -231,6 +231,12 @@ type PkgSet<'a> = (Pkg<'a>, Pkg<'a>, Option<Pkg<'a>>, &'a [Pkg<'a>]);
 fn download_mkl() -> MklInfo {
     let pkg_dir = cache_dir().join(format!("mkl-{MKL_VERSION}"));
 
+    // Serialise with the sibling build script (#94): this crate is built as both
+    // a dependency and a build-dependency unit, and both land here. The second
+    // one blocks until the first has finished, then finds every archive verified
+    // and every tree extracted, so it does no network I/O. Held until return.
+    let _cache_lock = CacheLock::acquire(&pkg_dir);
+
     let ((mkl_file, mkl_sha), (include_file, include_sha), devel, runtime): PkgSet<'_> =
         match target_os().as_str() {
         "linux" => (

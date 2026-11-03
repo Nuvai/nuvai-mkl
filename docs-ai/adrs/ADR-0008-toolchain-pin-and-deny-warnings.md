@@ -33,7 +33,10 @@ warnings accumulate unnoticed.
    `.github/workflows/toolchain-bump.yml` runs weekly (and on demand), finds the
    newest `1.99.x` tag, rewrites every pin via `.github/scripts/bump-toolchain.sh`
    and opens a PR to `main`. CI on that PR is the validation; any new lint is
-   fixed in the PR. Nothing merges automatically. A new minor (`1.100`) is an MSRV
+   fixed in the PR. Nothing merges automatically. A `toolchain-pins` CI job
+   (`.github/scripts/check-toolchain-pins.sh`) fails if any pin in `ci.yml` differs
+   from `rust-toolchain.toml`; the bump skips an unpublished tag, reuses an open bump PR
+   and closes superseded ones. A new minor (`1.100`) is an MSRV
    decision and is made by hand.
 4. `rust-version = "1.99"` in `Cargo.toml` stays as the MSRV floor for consumers;
    the pin applies to this repository's own build only.

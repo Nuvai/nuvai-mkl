@@ -17,5 +17,7 @@ if [[ "$old" != "$new" ]]; then
   sed -i.bak -e "s/toolchain: \"$old_re\"/toolchain: \"$new\"/" \
              -e "s/pinned $old_re toolchain/pinned $new toolchain/" "$root/.github/workflows/ci.yml"
   rm -f "$root/rust-toolchain.toml.bak" "$root/.github/workflows/ci.yml.bak"
+  # A pin the seds above did not match would otherwise be skipped silently.
+  "$root/.github/scripts/check-toolchain-pins.sh" >&2
 fi
 echo "$old"

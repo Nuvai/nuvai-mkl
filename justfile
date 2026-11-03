@@ -8,6 +8,8 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 # Deny warnings exactly as CI does (the toolchain is pinned, so this is stable).
+# This replaces any RUSTFLAGS in your shell (e.g. -C target-cpu=native) for every
+# recipe; run plain `cargo` for those, or append to this line locally.
 export RUSTFLAGS := "-D warnings"
 
 os := os()

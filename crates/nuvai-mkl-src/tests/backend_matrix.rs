@@ -14,8 +14,8 @@
 //! integration test is a separate binary linked from outside the crate, so it
 //! cannot run at all unless the link directives `nuvai-mkl-src`'s build script
 //! emitted for the current job resolved. The assertions stay at the selection
-//! level deliberately — *calling* into a backend is `nuvai-mkl/tests/smoke.rs`'s
-//! job, and `nuvai-mkl` is the crate whose build script supplies the
+//! level deliberately — *calling* into a backend is the per-domain files in
+//! `nuvai-mkl/tests/`'s job, and `nuvai-mkl` is the crate whose build script supplies the
 //! `--no-as-needed` / `force_runtime.c` treatment the x86_64 Linux link needs
 //! (#44). This crate's test binaries reference no MKL symbol and need none of it.
 //!

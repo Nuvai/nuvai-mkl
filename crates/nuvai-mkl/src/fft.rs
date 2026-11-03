@@ -759,7 +759,7 @@ impl Drop for FftPlan {
 
 /// Unit tests for the vDSP length routing.
 ///
-/// These live in-crate rather than in `tests/smoke.rs` because
+/// These live in-crate rather than in `tests/fft.rs` because
 /// [`interleaved_supports`] is private, and because the *behaviour* it guards
 /// is invisible on macOS 26: the `fft_roundtrip_*` tests only catch #53 on
 /// macOS 14, so a unit test on the routing decision is the only gate that runs

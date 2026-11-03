@@ -447,7 +447,7 @@ jobs:
       # Windows has no rpath: the loader resolves mkl_rt.3.dll (and its runtime
       # deps libiomp5md.dll / tbb12.dll) from PATH at process start. Every
       # extracted conda package puts its DLLs under <cache>/mkl-2026.1.0/<pkg>/Library/bin;
-      # prepend each before running the tests so the 6 domain smoke tests can
+      # prepend each before running the tests so the 7 per-domain smoke-test binaries can
       # load the runtime without a manual copy.
       - name: Add MKL DLL dir to PATH
         shell: pwsh

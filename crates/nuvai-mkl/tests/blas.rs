@@ -72,30 +72,33 @@ fn blas_hgemm_2x2() {
 #[cfg(not(target_arch = "aarch64"))]
 #[test]
 fn blas_hgemm_rejects_undersized_slices() {
+    use nuvai_mkl::error::ErrorKind;
     let a = [0x3C00u16; 4];
     let b = [0x3C00u16; 4];
     let mut c = [0u16; 4];
-    assert!(
-        blas::hgemm(
-            Layout::RowMajor,
-            Transpose::NoTrans,
-            Transpose::NoTrans,
-            // `m` far past what the 4-element `a` covers — the same shape as
-            // `blas_rejects_undersized_slices`.
-            100_000,
-            2,
-            2,
-            0x3C00,
-            &a,
-            2,
-            &b,
-            2,
-            0x0000,
-            &mut c,
-            2,
-        )
-        .is_err()
-    );
+    let err = blas::hgemm(
+        Layout::RowMajor,
+        Transpose::NoTrans,
+        Transpose::NoTrans,
+        // `m` far past what the 4-element `a` covers — the same shape as
+        // `blas_rejects_undersized_slices`.
+        100_000,
+        2,
+        2,
+        0x3C00,
+        &a,
+        2,
+        &b,
+        2,
+        0x0000,
+        &mut c,
+        2,
+    )
+    .err()
+    .expect("undersized operand must be rejected");
+    // The other half of `blas_hgemm_unsupported_before_validation`: where hgemm
+    // is supported, validation is what rejects the call.
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument, "{err}");
 }
 
 #[test]

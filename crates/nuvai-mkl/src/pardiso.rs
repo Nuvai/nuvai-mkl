@@ -439,7 +439,7 @@ impl Pardiso {
                 // numeric), and is deliberately left untested: on the macOS 14 CI
                 // runner `_SparseFactorQR_Double` aborts the process on that
                 // input rather than returning, so no assertion on it can pass in
-                // CI — see the note in `tests/smoke.rs`.
+                // CI — see the note in `tests/pardiso.rs`.
                 //
                 // SAFETY: `factor` is an owned, initialized factorization in one
                 // of those states (the struct is returned by value and fully

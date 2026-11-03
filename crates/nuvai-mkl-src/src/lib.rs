@@ -83,6 +83,12 @@ include!("link_args.rs");
 #[cfg(test)]
 include!("cache_lock.rs");
 
+// `acquire_logic.rs` is the std-only half of `acquire.rs` (#95). Only `build.rs`
+// calls it, so it is compiled here for its tests alone: unconditionally it
+// would be dead code in the library.
+#[cfg(test)]
+include!("acquire_logic.rs");
+
 // `static` (ADR-0005) links Intel oneMKL's archives directly, and only
 // `x86_64-unknown-linux-gnu` can: there is no `mkl-static`-equivalent conda
 // package for Windows, and Accelerate/OpenBLAS have no static form to switch

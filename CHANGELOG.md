@@ -9,6 +9,13 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
 
 ### Changed
 
+- **Toolchain pinned to an exact patch, warnings denied in CI** (issue #96,
+  ADR-0008). `rust-toolchain.toml` pins `1.99.1`; every CI job and the justfile
+  follow it, and `RUSTFLAGS="-D warnings"` now applies to check, test and clippy
+  (the downstream-consumer job is exempt, and `cargo:warning=` build-script output
+  is unaffected). A weekly `toolchain-bump.yml` workflow opens a PR to `main` when
+  a newer 1.99.x is released. `rust-version = "1.99"` is unchanged.
+
 - **`x86_64-unknown-linux-gnu` links oneMKL statically by default** (issue #72).
   The dynamic runtime dispatcher (`mkl_rt`) is now the `dynamic` opt-in. This is
   a **breaking behaviour change** for a consumer on that target that declared
@@ -52,7 +59,7 @@ the crate is pre-1.0, so breaking changes are permitted without a major bump.
   (`<cache>/mkl-<version>/.acquire.lock`, `std::fs::File::lock`, no new
   dependency) for the whole acquisition, so the second unit waits and then finds
   verified archives and extracted trees. The per-PID staging from #63/#64 stays
-  as defence in depth. See ADR-0008.
+  as defence in depth. See ADR-0009.
 
 - The second gap reported in issue #72 was re-tested on the current revision and
   is real: supplying the rpath by hand surfaces

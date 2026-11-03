@@ -1,4 +1,4 @@
-# ADR-0008: Serialise acquisition with a cache lock rather than merging units
+# ADR-0009: Serialise acquisition with a cache lock rather than merging units
 
 - **Status:** Accepted
 - **Date:** 2026-11-03

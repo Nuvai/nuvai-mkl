@@ -28,11 +28,13 @@
 //! cross-compiling `--target aarch64-unknown-linux-gnu` from an x86_64 host
 //! would select `IntelMkl` and emit x86_64 MKL directives for an ARM target.
 
-// `mkl_info.rs` first: `acquire.rs` relies on the `env`/`Path`/`PathBuf`
+// `mkl_info.rs` first: `acquire_logic.rs` (std-only, spells its paths out) and
+// `acquire.rs` rely on the `env`/`Path`/`PathBuf`
 // imports it declares, since both share this script's module — which is also
 // where `fs` (from `acquire.rs`) comes from.
 include!("src/mkl_info.rs");
 include!("src/cache_lock.rs");
+include!("src/acquire_logic.rs");
 include!("src/acquire.rs");
 include!("src/backend.rs");
 
@@ -41,6 +43,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/mkl_info.rs");
     println!("cargo:rerun-if-changed=src/acquire.rs");
+    println!("cargo:rerun-if-changed=src/cache_lock.rs");
     println!("cargo:rerun-if-changed=src/backend.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_OPENBLAS");
     println!("cargo:rerun-if-env-changed=OPENBLAS_ROOT");

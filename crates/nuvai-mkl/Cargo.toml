@@ -69,7 +69,7 @@ nuvai-mkl-src = { workspace = true }
 # triple `backend.rs`'s `compile_error!` and `build.rs`'s check require.
 #
 # Two units means two build scripts against one `~/.cache/nuvai-mkl`; they
-# serialise on a cache lock (`cache_lock.rs`, ADR-0008), so each archive is
+# serialise on a cache lock (`cache_lock.rs`, ADR-0009), so each archive is
 # fetched once. The units cannot be merged: they carry different features.
 #
 # There are two edges because Cargo builds two units of `nuvai-mkl-src` from

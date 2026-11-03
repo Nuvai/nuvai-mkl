@@ -7,6 +7,11 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+# Deny warnings exactly as CI does (the toolchain is pinned, so this is stable).
+# This replaces any RUSTFLAGS in your shell (e.g. -C target-cpu=native) for every
+# recipe; run plain `cargo` for those, or append to this line locally.
+export RUSTFLAGS := "-D warnings"
+
 os := os()
 arch := arch()
 
@@ -16,15 +21,16 @@ export MACOSX_DEPLOYMENT_TARGET := if os == "macos" { "12.0" } else { env("MACOS
 default:
     @just --list
 
-# Install prerequisites for this host: stable 1.99 toolchain + system libraries.
+# Install prerequisites for this host: the pinned toolchain + system libraries.
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "host: {{os}}/{{arch}}"
     command -v rustup >/dev/null || { echo "install rustup first: https://rustup.rs"; exit 1; }
-    # rust-version = 1.99 (edition 2024), stable (no nightly needed).
-    rustup toolchain install 1.99 --component clippy,rustfmt
-    rustup default 1.99
+    # The exact patch is pinned in rust-toolchain.toml (single source of truth;
+    # ADR-0008). rustup reads it, so install that channel rather than hardcoding one here.
+    channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+    rustup toolchain install "$channel" --component clippy,rustfmt
     case "{{os}}/{{arch}}" in
       macos/aarch64)
         # Accelerate needs nothing. OpenBLAS is only for the `openblas` feature.
@@ -90,11 +96,12 @@ clippy-dynamic:
 # x86_64 Linux: separate-workspace downstream consumers (#70/#72). Needs MKL.
 [linux]
 consumers:
-    cargo run --manifest-path consumers/dependency-only/Cargo.toml
-    cargo run --manifest-path consumers/build-script-helper/Cargo.toml --features static
-    cargo run --manifest-path consumers/build-script-helper/Cargo.toml --features dynamic
+    # Consumers build as an outside user would: no RUSTFLAGS (matches CI).
+    RUSTFLAGS= cargo run --manifest-path consumers/dependency-only/Cargo.toml
+    RUSTFLAGS= cargo run --manifest-path consumers/build-script-helper/Cargo.toml --features static
+    RUSTFLAGS= cargo run --manifest-path consumers/build-script-helper/Cargo.toml --features dynamic
 
-# Everything CI runs for this host (no -D warnings, matching CI).
+# Everything CI runs for this host (with -D warnings, matching CI).
 ci: check test clippy
     #!/usr/bin/env bash
     set -euo pipefail

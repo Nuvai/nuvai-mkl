@@ -8,7 +8,7 @@
 // wait, then find verified archives and extracted trees already in place.
 //
 // Merging the two units instead is not viable: they carry different features
-// (ADR-0005/0006/0007), and a cross build needs both. See ADR-0008.
+// (ADR-0005/0006/0007), and a cross build needs both. See ADR-0009.
 //
 // `build.rs` includes this file; `lib.rs` includes it under `cfg(test)` so the
 // unit tests below run (`acquire.rs` itself has no test harness). It declares

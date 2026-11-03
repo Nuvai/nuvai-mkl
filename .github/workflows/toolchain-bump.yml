@@ -1,0 +1,65 @@
+name: Toolchain bump
+
+# Proposes a PR that moves the pinned toolchain to the newest 1.99.x patch
+# (ADR-0008). CI on that PR is the validation; nothing is merged automatically.
+# Moving to a new minor (1.100) is a deliberate change to MSRV and is not done here.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    name: propose pin bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the newest 1.99.x release
+        id: latest
+        run: |
+          set -euo pipefail
+          minor=$(sed -n 's/^channel *= *"\([0-9]*\.[0-9]*\)\..*/\1/p' rust-toolchain.toml)
+          latest=$(git ls-remote --tags --refs https://github.com/rust-lang/rust "refs/tags/${minor}.*" \
+            | sed 's|.*refs/tags/||' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+          [ -n "$latest" ] || { echo "::error::no ${minor}.x tags found"; exit 1; }
+          echo "version=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Apply the new pin
+        id: apply
+        run: |
+          set -euo pipefail
+          old=$(.github/scripts/bump-toolchain.sh "${{ steps.latest.outputs.version }}")
+          echo "old=$old" >> "$GITHUB_OUTPUT"
+          if git diff --quiet; then
+            echo "Pin already at $old; nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open the PR to main
+        if: steps.apply.outputs.changed == 'true'
+        env:
+          # PRs opened with the default GITHUB_TOKEN do not trigger CI. Provide a
+          # TOOLCHAIN_BUMP_TOKEN secret (PAT or app token) so the PR gets checks;
+          # without it the PR still opens, but needs a manual re-run/push.
+          GH_TOKEN: ${{ secrets.TOOLCHAIN_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+          OLD: ${{ steps.apply.outputs.old }}
+          NEW: ${{ steps.latest.outputs.version }}
+        run: |
+          set -euo pipefail
+          branch="chore-toolchain-$NEW"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -am "chore: bump pinned toolchain $OLD to $NEW"
+          git push --force-with-lease origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore: bump pinned toolchain $OLD to $NEW" \
+            --body "Automated pin bump (ADR-0008). New lints are denied by \`-D warnings\`, so CI on this PR is the check; fix any that surface here, then merge."

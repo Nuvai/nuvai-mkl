@@ -248,4 +248,15 @@ mod linux_aarch64 {
             ErrorKind::Unsupported
         );
     }
+
+    #[test]
+    fn vml_unsupported_names_domain() {
+        // Mismatched lengths are invalid on every backend that validates; the
+        // domain name in the message is asserted so a copy-pasted domain string
+        // in `src/vml.rs` cannot pass.
+        let mut r = [0.0f32; 2];
+        let err = vml::add(&[0.0, 1.0], &[1.0], &mut r).err().unwrap();
+        assert_eq!(err.kind(), ErrorKind::Unsupported, "{err}");
+        assert!(err.to_string().contains("VML"), "{err}");
+    }
 }

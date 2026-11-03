@@ -174,4 +174,13 @@ mod linux_aarch64 {
             ErrorKind::Unsupported
         );
     }
+
+    #[test]
+    fn dss_unsupported_before_validation() {
+        // Empty CSR arrays are invalid on every backend that validates, so
+        // `Unsupported` must come first.
+        let err = dss::Dss::factor_symmetric(&[], &[], &[]).err().unwrap();
+        assert_eq!(err.kind(), ErrorKind::Unsupported, "{err}");
+        assert!(err.to_string().contains("DSS"), "{err}");
+    }
 }

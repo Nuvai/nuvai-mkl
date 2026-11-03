@@ -373,4 +373,18 @@ mod linux_aarch64 {
             ErrorKind::Unsupported
         );
     }
+
+    #[test]
+    fn fft_unsupported_before_validation() {
+        // `len == 0` is invalid on every backend that validates, so asserting
+        // `Unsupported` here proves the Unsupported return comes first. The
+        // message must also name the right domain.
+        for err in [
+            fft::FftPlan::new_c32(0).err().unwrap(),
+            fft::FftPlan::new_c64(0).err().unwrap(),
+        ] {
+            assert_eq!(err.kind(), ErrorKind::Unsupported, "{err}");
+            assert!(err.to_string().contains("FFT"), "{err}");
+        }
+    }
 }

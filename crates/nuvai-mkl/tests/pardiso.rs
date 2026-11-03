@@ -251,4 +251,14 @@ mod linux_aarch64 {
             ErrorKind::Unsupported
         );
     }
+
+    #[test]
+    fn pardiso_unsupported_before_validation() {
+        // An empty `ia` is invalid on every backend that validates (`ia` must
+        // have `n + 1` entries), so `Unsupported` must come first.
+        let mut solver = pardiso::Pardiso::new(pardiso::mtype::NONSYMMETRIC);
+        let err = solver.solve(&[], &[], &[], &[]).err().unwrap();
+        assert_eq!(err.kind(), ErrorKind::Unsupported, "{err}");
+        assert!(err.to_string().contains("PARDISO"), "{err}");
+    }
 }

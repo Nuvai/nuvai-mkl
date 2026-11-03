@@ -81,4 +81,11 @@ mod linux_aarch64 {
             ErrorKind::Unsupported
         );
     }
+
+    #[test]
+    fn vsl_unsupported_names_domain() {
+        let err = vsl::Stream::new(0).err().unwrap();
+        assert_eq!(err.kind(), ErrorKind::Unsupported, "{err}");
+        assert!(err.to_string().contains("VSL"), "{err}");
+    }
 }

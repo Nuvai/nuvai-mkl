@@ -220,3 +220,35 @@ fn blas_hgemm_unsupported_on_aarch64() {
         ErrorKind::Unsupported
     );
 }
+
+/// Unsupported comes before argument validation (#47), so an undersized operand
+/// still yields `Unsupported` rather than `InvalidArgument`. Mirrors
+/// `blas_hgemm_rejects_undersized_slices`, which runs on the other targets.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn blas_hgemm_unsupported_before_validation() {
+    use nuvai_mkl::error::ErrorKind;
+    let a = [0x3C00u16; 4];
+    let b = [0x3C00u16; 4];
+    let mut c = [0u16; 4];
+    let err = blas::hgemm(
+        Layout::RowMajor,
+        Transpose::NoTrans,
+        Transpose::NoTrans,
+        100_000,
+        2,
+        2,
+        0x3C00,
+        &a,
+        2,
+        &b,
+        2,
+        0x0000,
+        &mut c,
+        2,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(err.kind(), ErrorKind::Unsupported, "{err}");
+    assert!(err.to_string().contains("hgemm"), "{err}");
+}

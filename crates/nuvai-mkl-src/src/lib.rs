@@ -79,6 +79,10 @@ include!("mkl_info.rs");
 include!("backend.rs");
 include!("link_args.rs");
 
+// Compiled here only so its unit tests run; the lock is used by `build.rs` (#94).
+#[cfg(test)]
+include!("cache_lock.rs");
+
 // `static` (ADR-0005) links Intel oneMKL's archives directly, and only
 // `x86_64-unknown-linux-gnu` can: there is no `mkl-static`-equivalent conda
 // package for Windows, and Accelerate/OpenBLAS have no static form to switch

@@ -7,9 +7,27 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: ""
+  # Deny every rustc and clippy warning in the workspace (dependencies are
+  # capped by cargo's --cap-lints and are not affected). This is safe only
+  # because the toolchain is pinned to an exact patch (rust-toolchain.toml, and
+  # the `toolchain:` pin on each job below): a new lint can arrive only through
+  # a deliberate bump PR (.github/workflows/toolchain-bump.yml), never by
+  # drifting under an unrelated change. ADR-0008.
+  #
+  # `cargo:warning=` lines from build scripts (the macOS deployment-target note,
+  # the `dynamic` disclosure of #72) are not rustc warnings and are unaffected.
+  # The downstream-consumers job clears this: it must build as an outside user.
+  RUSTFLAGS: "-D warnings"
 
 jobs:
+  # Every `toolchain:` pin below must equal rust-toolchain.toml (ADR-0008).
+  toolchain-pins:
+    name: toolchain pins in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: .github/scripts/check-toolchain-pins.sh
+
   # Apple Silicon: every domain runs on Accelerate + rand (task #3). The
   # runner is Apple Silicon so aarch64-apple-darwin is the native host target.
   #
@@ -31,10 +49,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install stable 1.99 toolchain (native aarch64-apple-darwin)
+      - name: Install pinned 1.99.1 toolchain (native aarch64-apple-darwin)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99"
+          toolchain: "1.99.1"
           targets: aarch64-apple-darwin
           components: clippy, rustfmt
 
@@ -47,9 +65,8 @@ jobs:
         run: cargo test --target aarch64-apple-darwin --workspace
 
       - name: cargo clippy
-        # No `-D warnings`: the toolchain floats on the 1.99 line, and a new lint
-        # in a point release could break CI for reasons unrelated to the
-        # code — matching the x86_64 Linux/Windows clippy jobs.
+        # Warnings are denied through the workflow-level RUSTFLAGS; the toolchain
+        # is pinned to an exact patch, so this cannot break on an unrelated lint.
         run: cargo clippy --target aarch64-apple-darwin --workspace --all-targets
 
   # Apple Silicon + OpenBLAS: the `openblas` feature swaps vecLib for OpenBLAS
@@ -62,7 +79,7 @@ jobs:
     runs-on: macos-14
     env:
       # vDSP's interleaved-complex DFT (task #13) is macOS 12.0+, so pin the
-      # deployment target for the linker. No RUSTFLAGS: the keg-only OpenBLAS
+      # deployment target for the linker. No extra RUSTFLAGS: the keg-only OpenBLAS
       # search path is emitted by nuvai-mkl-src's build.rs (`rustc-link-search`).
       MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
@@ -71,10 +88,10 @@ jobs:
       - name: Install OpenBLAS
         run: brew install openblas
 
-      - name: Install stable 1.99 toolchain (native aarch64-apple-darwin)
+      - name: Install pinned 1.99.1 toolchain (native aarch64-apple-darwin)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99"
+          toolchain: "1.99.1"
           targets: aarch64-apple-darwin
           components: clippy, rustfmt
 
@@ -93,8 +110,8 @@ jobs:
         # `accelerate` and `openblas` are mutually exclusive on
         # aarch64-apple-darwin (#35).
         #
-        # No `-D warnings`, on the same terms as the other four jobs: floating
-        # toolchain + new lints = CI breaks unrelated to the code.
+        # Warnings are denied through the workflow-level RUSTFLAGS, on the pinned
+        # toolchain, as in every other job.
         run: cargo clippy --target aarch64-apple-darwin --workspace --all-targets --no-default-features --features openblas
 
   # ARM64 Linux: OpenBLAS is the sole backend (BLAS/LAPACK only; FFT/VML/VSL/
@@ -110,10 +127,10 @@ jobs:
       - name: Install OpenBLAS
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
 
-      - name: Install stable 1.99 toolchain (native aarch64-unknown-linux-gnu)
+      - name: Install pinned 1.99.1 toolchain (native aarch64-unknown-linux-gnu)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99"
+          toolchain: "1.99.1"
           targets: aarch64-unknown-linux-gnu
           components: clippy, rustfmt
 
@@ -126,8 +143,8 @@ jobs:
         run: cargo test --target aarch64-unknown-linux-gnu --workspace
 
       - name: cargo clippy
-        # No `-D warnings`: new lints on a floating toolchain = CI breaks unrelated
-        # to the code; matches the x86_64 Linux/Windows clippy jobs.
+        # Warnings are denied through the workflow-level RUSTFLAGS; the toolchain
+        # is pinned to an exact patch, so this cannot break on an unrelated lint.
         run: cargo clippy --target aarch64-unknown-linux-gnu --workspace --all-targets
 
   # x86_64 Linux: Intel oneMKL acquired by nuvai-mkl-src at build time
@@ -148,10 +165,10 @@ jobs:
       - name: Install libclang (bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
-      - name: Install stable 1.99 toolchain
+      - name: Install pinned 1.99.1 toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99"
+          toolchain: "1.99.1"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
@@ -230,10 +247,10 @@ jobs:
       - name: Install libclang (bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
-      - name: Install stable 1.99 toolchain
+      - name: Install pinned 1.99.1 toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99"
+          toolchain: "1.99.1"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
@@ -300,16 +317,20 @@ jobs:
   x86_64-linux-downstream:
     name: x86_64-unknown-linux-gnu (downstream consumers)
     runs-on: ubuntu-latest
+    env:
+      # Consumers build as an outside user would, with no RUSTFLAGS (see the
+      # fixtures below); the workspace-wide `-D warnings` does not apply.
+      RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
 
       - name: Install libclang (bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
-      - name: Install stable 1.99 toolchain
+      - name: Install pinned 1.99.1 toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99"
+          toolchain: "1.99.1"
 
       - uses: Swatinem/rust-cache@v2
 
@@ -406,10 +427,10 @@ jobs:
           "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
-      - name: Install stable 1.99 toolchain (native x86_64-pc-windows-msvc)
+      - name: Install pinned 1.99.1 toolchain (native x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99"
+          toolchain: "1.99.1"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2

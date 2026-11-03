@@ -221,7 +221,10 @@ published to a registry (ADR-0004). Depend on the wrapper crate only:
 and `backend_tag()` are public if you want to report the active backend yourself.
 
 The workspace declares `rust-version = "1.99"` (edition 2024), so Cargo refuses an
-older toolchain; stable 1.99 or newer is enough — no nightly required. See
+older toolchain; stable 1.99 or newer is enough — no nightly required. Working
+**in this repository** uses the exact toolchain pinned in `rust-toolchain.toml`
+(rustup installs it on first use), with warnings denied as in CI; the pin is bumped
+by a scheduled PR (ADR-0008). See
 [Requirements](#requirements) for the per-target prerequisites, and expect an
 MKL download into `~/.cache/nuvai-mkl/` on the Intel targets the first time you
 build — ~130 MB for the default static link on `x86_64-unknown-linux-gnu`, and

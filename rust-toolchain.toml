@@ -1,0 +1,7 @@
+# The single source of truth for the toolchain: rustup reads this for local
+# builds and `just setup`; ci.yml pins the same patch on each job and
+# .github/workflows/toolchain-bump.yml moves all of them together.
+# `rust-version = "1.99"` in Cargo.toml remains the MSRV floor. See ADR-0008.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]

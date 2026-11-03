@@ -360,8 +360,6 @@ mod linux_aarch64 {
     use nuvai_mkl::error::ErrorKind;
     use nuvai_mkl::fft;
 
-    use nuvai_mkl::error::ErrorKind;
-
     #[test]
     fn fft_plan_unsupported() {
         // `.err().unwrap()` rather than `.unwrap_err()`: the Ok type

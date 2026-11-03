@@ -58,8 +58,10 @@ dynamic = []
 # them here as well put `ureq`/`zip`/`zstd`/`tar`/`sha2` — and their trees,
 # rustls/ring/icu and ~114 crates — in the *runtime* dependency graph of every
 # downstream build, though nothing at runtime referenced them. The library target
-# compiles `src/mkl_info.rs`, `src/backend.rs` and `src/link_args.rs` only;
-# `src/acquire.rs`, which uses these crates, is `include!`d by `build.rs` alone.
+# compiles `src/mkl_info.rs`, `src/backend.rs` and `src/link_args.rs` only, plus
+# `src/acquire_logic.rs` under `cfg(test)` (std-only, so its tests run under
+# `cargo test`); `src/acquire.rs`, which uses these crates, is `include!`d by
+# `build.rs` alone.
 [build-dependencies]
 ureq = "2.12"
 zip = "0.6"

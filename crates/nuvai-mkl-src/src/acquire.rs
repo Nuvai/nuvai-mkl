@@ -18,6 +18,13 @@
 // library's source keeps those crates in `[dependencies]`, and therefore in the
 // runtime graph of every downstream build, however it is gated.
 //
+// The decisions that need none of those crates — body validation, staging and
+// cache paths, the conda subdirectory, the digest comparison, the retry schedule
+// and the install race — live in `acquire_logic.rs` (#95), which takes its
+// inputs as arguments and is `include!`d by `lib.rs` under `#[cfg(test)]` so
+// that `cargo test` covers it. `build.rs` includes it immediately before this
+// file.
+//
 // `mkl_info.rs` is the half the library *does* compile: `MKL_VERSION`,
 // `MklInfo`, and the reader that rebuilds one from the metadata published below.
 // `build.rs` includes it immediately before this file, which is where the
@@ -25,7 +32,6 @@
 
 use std::fs;
 use std::io::{self, Read};
-use std::time::Duration;
 use sha2::Digest;
 
 /// How many times to attempt one package download before giving up.
@@ -337,8 +343,9 @@ fn download_mkl() -> MklInfo {
 /// checked against its pinned digest, so a mirror cannot substitute different
 /// bytes), and the refusal path can be exercised against a server that returns
 /// it on demand. That last part matters because `acquire.rs` is included only
-/// by `build.rs`: nothing in this file is reachable from `cargo test`, so an
-/// end-to-end check of the download path has to run a real build.
+/// by `build.rs`: the I/O in this file is not reachable from `cargo test` (only the
+/// logic in `acquire_logic.rs` is), so an end-to-end check of the download
+/// path has to run a real build.
 fn conda_base() -> String {
     env::var("NUVAI_MKL_CONDA_BASE").unwrap_or_else(|_| CONDA_BASE.to_string())
 }
@@ -418,12 +425,8 @@ fn extract_conda_atomic(archive: &Path, out: &Path) {
     }
 }
 
-/// Hash `path` and compare it to `expected`.
-///
-/// The received length is part of the error because it is what separates the
-/// two ways this fails: a short or empty body is a refused transfer, while a
-/// plausible length that still misses the digest is *other content* altogether —
-/// a proxy's error page, say. The digest alone can only say "not this".
+/// Hash `path` and compare it to `expected` — the hashing is here because it
+/// needs `sha2`; the comparison and its error text are [`check_digest`].
 fn verify_sha256(path: &Path, expected: &str, file: &str) -> Result<(), String> {
     let mut archive = fs::File::open(path)
         .map_err(|e| format!("open downloaded archive {}: {e}", path.display()))?;
@@ -440,31 +443,22 @@ fn verify_sha256(path: &Path, expected: &str, file: &str) -> Result<(), String> 
         len += n as u64;
         hasher.update(&buf[..n]);
     }
-    let actual = format!("{:x}", hasher.finalize());
-    if actual != expected {
-        return Err(format!(
-            "checksum mismatch for {file}: expected {expected}, got {actual} ({len} bytes)"
-        ));
-    }
-    Ok(())
+    check_digest(&format!("{:x}", hasher.finalize()), expected, file, len)
 }
 
 fn conda_subdir() -> &'static str {
-    if target_os() == "windows" {
-        "win-64"
-    } else {
-        "linux-64"
-    }
+    conda_subdir_for(&target_os())
 }
 
 fn cache_dir() -> PathBuf {
     // `HOME` is commonly unset in stock Windows shells; fall back to
     // `USERPROFILE` there so the cache does not silently land in `.`.
-    let base = env::var("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|_| env::var("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .or_else(|_| env::var("USERPROFILE").map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(|_| PathBuf::from("."));
+    let var = |name| env::var(name).ok();
+    let base = cache_base(
+        var("XDG_CACHE_HOME").as_deref(),
+        var("HOME").as_deref(),
+        var("USERPROFILE").as_deref(),
+    );
     let dir = base.join("nuvai-mkl");
     fs::create_dir_all(&dir).expect("create MKL cache dir");
     dir
@@ -484,7 +478,7 @@ fn download_verified(url: &str, dest: &Path, sha256: &str, file: &str) {
         if attempt > 1 {
             // Back off between attempts: a CDN that is rate-limiting wants the
             // gap, not another request.
-            let pause = Duration::from_secs(1 << (attempt - 1));
+            let pause = retry_pause(attempt);
             eprintln!(
                 "[nuvai-mkl-src] retrying in {pause:?} \
                  (attempt {attempt}/{DOWNLOAD_ATTEMPTS}): {last}"
@@ -515,7 +509,7 @@ fn download_verified(url: &str, dest: &Path, sha256: &str, file: &str) {
 /// it down with `NotFound` somewhere later. Both run on the same machine with no
 /// coordination beyond these filenames, so neither may touch the other's work.
 fn staging_path(dest: &Path) -> PathBuf {
-    dest.with_extension(format!("{}.part", std::process::id()))
+    staging_path_for(dest, std::process::id())
 }
 
 /// One attempt: stage the bytes, check them, then install them at `dest`.
@@ -534,27 +528,11 @@ fn fetch_verified(url: &str, dest: &Path, sha256: &str, file: &str) -> Result<()
 /// another build script may have installed first.
 ///
 /// Both copies are checked against the same pinned digest, so there is nothing
-/// to choose between them and no reason to overwrite one with the other.
+/// to choose between them and no reason to overwrite one with the other. The
+/// race logic itself is [`install_with`], which takes the verifier as an
+/// argument so it can be tested without `sha2`.
 fn install(tmp: &Path, dest: &Path, sha256: &str, file: &str) -> Result<(), String> {
-    if dest.exists() && verify_sha256(dest, sha256, file).is_ok() {
-        let _ = fs::remove_file(tmp);
-        return Ok(());
-    }
-    match fs::rename(tmp, dest) {
-        Ok(()) => Ok(()),
-        // Windows refuses to rename onto an existing file, so a failure here
-        // usually means the other build script won the race. Re-check before
-        // treating it as an error.
-        Err(e) => {
-            let installed = verify_sha256(dest, sha256, file).is_ok();
-            let _ = fs::remove_file(tmp);
-            if installed {
-                Ok(())
-            } else {
-                Err(format!("install {}: {e}", dest.display()))
-            }
-        }
-    }
+    install_with(tmp, dest, |p| verify_sha256(p, sha256, file))
 }
 
 /// One transfer, staged at `path`. Never removes `path`; the caller owns it.
@@ -578,24 +556,6 @@ fn download_to(url: &str, path: &Path) -> Result<(), String> {
         Some(reason) => Err(format!("HTTP {status} from {url}: {reason}")),
         None => Ok(()),
     }
-}
-
-/// Why a downloaded body cannot be used, or `None` when it can.
-///
-/// A `2xx` whose body is empty — or shorter than the `Content-Length` it
-/// declared — is how the CDN in front of conda-forge refuses a request it will
-/// not serve. That is a defence aimed at the caller, not evidence of a bad
-/// archive, and the two want different responses: a retry and a diagnostic
-/// here, versus clearing the cache there. A non-empty body is accepted when the
-/// response declared no length (chunked transfer); the pinned digest in
-/// [`verify_sha256`] stays the only gate in that case.
-fn unusable_body(written: u64, declared: Option<u64>) -> Option<String> {
-    if written == 0 {
-        return Some("empty body".to_string());
-    }
-    declared
-        .filter(|declared| *declared != written)
-        .map(|declared| format!("truncated body: {written} of {declared} bytes"))
 }
 
 /// A `.conda` file is a ZIP containing `info-*.tar.zst` and `pkg-*.tar.zst`.

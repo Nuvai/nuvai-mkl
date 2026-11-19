@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "nuvai-mkl"
 description = "Safe, idiomatic Rust wrapper over Intel oneMKL 2026.1.0 (BLAS, LAPACK, FFT, VML, VSL, sparse, PARDISO, DSS)"
 version.workspace = true

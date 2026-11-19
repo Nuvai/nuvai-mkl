@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "nuvai-mkl-src"
 description = "Acquire and link Intel oneMKL 2026.1.0 — system-detect (MKLROOT/oneAPI) or download from conda-forge"
 version.workspace = true

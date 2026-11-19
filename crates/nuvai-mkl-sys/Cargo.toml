@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "nuvai-mkl-sys"
 description = "Raw FFI bindings to the Intel oneMKL 2026.1.0 C interface (hand-written Accelerate surface on Apple Silicon)"
 version.workspace = true
